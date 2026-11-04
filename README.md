@@ -17,6 +17,6 @@ Then open http://127.0.0.1:5185. Put `OPENAI_API_KEY=...` in a `.env` file next 
 
 ## Hosting
 
-Live at https://intentionality-interceptor.vercel.app (Vercel free plan; pushes to `main` redeploy). It deploys as-is (Flask is detected from `app.py`). Set `OPENAI_API_KEY` under Project → Settings → Environment Variables.
+Live at https://intentionality-interceptor.vercel.app (Vercel free plan; redeploy with `vercel deploy --prod`). It deploys as-is (Flask is detected from `app.py`). Set `OPENAI_API_KEY` under Project → Settings → Environment Variables.
 
 Made by Legion · Awsaa-Legion@proton.me

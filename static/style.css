@@ -133,3 +133,6 @@ footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 2
 .rule select, .rule input[type=time] { font: inherit; font-size: 13.5px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--panel); color: var(--text); }
 .check { display: flex; align-items: center; gap: 8px; }
 .check input { accent-color: var(--text); }
+.setup-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--soft); font-size: 14px; }
+.setup-row small { color: var(--muted); }
+.setup-row .btn-line:disabled { color: var(--good); border-color: transparent; cursor: default; }

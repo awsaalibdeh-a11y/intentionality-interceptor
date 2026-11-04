@@ -5,6 +5,8 @@ __pycache__/
 
 .vercel
 .env*
+dist/
+windows/nuget/
 
 # desktop app local state
 usage_log.json

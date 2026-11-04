@@ -506,7 +506,38 @@ $("resetBtn").addEventListener("click", () => {
   resetAsk();
 });
 
+// ---- native setup (Android / Windows apps) -------------------------------
+
+function nativeStatus() {
+  try { return JSON.parse(NATIVE.status()); } catch { return null; }
+}
+function renderSetup() {
+  const st = NATIVE && typeof NATIVE.status === "function" ? nativeStatus() : null;
+  if (!st) return;
+  const done = (id, ok, label) => {
+    $(id).textContent = ok ? "On" : label;
+    $(id).disabled = ok;
+  };
+  done("setUsage", st.usage !== false, "Allow");
+  done("setOverlay", st.overlay !== false, "Allow");
+  done("setGuard", !!st.guard, "Turn on");
+  $("setupView").classList.toggle("hidden", st.usage !== false && st.overlay !== false && !!st.guard);
+}
+window.vouchNativeChanged = renderSetup;
+$("setUsage").addEventListener("click", () => native("askUsage"));
+$("setOverlay").addEventListener("click", () => native("askOverlay"));
+$("setGuard").addEventListener("click", () => { native("startGuard"); setTimeout(renderSetup, 500); });
+
+// The lock screen sends people here as /?app=TikTok: pick that app for them.
+const asked = new URLSearchParams(location.search).get("app");
+if (asked) {
+  const chip = [...document.querySelectorAll(".chip")].find((c) => c.dataset.app.toLowerCase() === asked.toLowerCase());
+  if (chip) chip.click();
+  else { $("customApp").value = asked; $("customApp").dispatchEvent(new Event("input")); }
+}
+
 if (NATIVE) $("getApps").classList.add("hidden");
+renderSetup();
 renderRules();
 render();
 if (load(ACTIVE, null)) startTimer();

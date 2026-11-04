@@ -5,3 +5,6 @@ __pycache__/
 
 .vercel
 .env*
+
+# desktop app local state
+usage_log.json

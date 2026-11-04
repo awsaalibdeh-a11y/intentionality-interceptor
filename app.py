@@ -129,5 +129,46 @@ def check():
     return jsonify(approved=minutes > 0, minutes=minutes, message=message, source=source)
 
 
+def _plain(text, status=200):
+    return text, status, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.post("/api/approve")
+def approve():
+    """Endpoint for the desktop app: replies with the model's raw verdict text.
+
+    The desktop app parses the reply itself, so anything that goes wrong here is
+    sent as a DENY line, never as an approval.
+    """
+    token = os.environ.get("GATEKEEPER_TOKEN", "").strip()
+    if token:
+        sent = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        if sent != token and request.headers.get("X-Gatekeeper-Token", "").strip() != token:
+            return _plain("DENY: Unauthorized.", 401)
+    data = request.get_json(silent=True) or {}
+    target = str(data.get("app") or data.get("target") or "").strip()[:60]
+    reason = str(data.get("reason", "")).strip()[:600]
+    if not target or not reason:
+        return _plain("DENY: Missing app or reason.", 400)
+    try:
+        usage = max(0, min(1440, int(data.get("minutes_today", data.get("usage_minutes", 0)))))
+        sessions = max(0, min(200, int(data.get("sessions", 0))))
+    except (TypeError, ValueError):
+        usage, sessions = 0, 0
+    if not _key():
+        return _plain("DENY: The gatekeeper isn't configured yet, so the lock stays on.")
+    if not _allowed(_client_ip()):
+        return _plain("DENY: Too many requests for now. Try again later.", 429)
+    try:
+        reply = ask_gatekeeper(build_timer_message(target, reason, usage, sessions))
+    except Exception as exc:
+        app.logger.warning("gatekeeper call failed: %s", type(exc).__name__)
+        return _plain("DENY: The gatekeeper couldn't be reached, so the lock stays on.")
+    minutes, message = parse_timer_verdict(reply)
+    if minutes:
+        return _plain(f"APPROVE: {minutes}\n{message}")
+    return _plain(f"DENY: {message}")
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5185")), debug=False)

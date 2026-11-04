@@ -11,7 +11,7 @@ A WAICY project that stands between you and a distracting app. Before it unlocks
 - **Your rules:** a daily limit, focus hours (only proven tasks), and a note to yourself shown when you're denied.
 - `CLAUDE_TIMER_PROMPT` / `CLAUDE_SYSTEM_PROMPT` stay in `prompts.py` for apps that call OpenAI directly with one prompt.
 - Add `?demo` to the URL to show the demo sliders for usage and trust.
-- The local Python UI is being built separately (DeepSeek).
+- The local Python UI lives in `desktop/` (see below).
 
 ## Run locally
 
@@ -30,10 +30,38 @@ Made by Legion · Awsaa-Legion@proton.me
 
 ## Desktop app endpoint
 
-`POST /api/approve` with JSON `{"app": "YouTube", "reason": "...", "minutes_today": 42}` (optional `"sessions"`, `"trust"` 0–100, `"proof_url"`, and `"image"` as a `data:image/jpeg;base64,...` screenshot). The reply is plain text: `APPROVE: <minutes>` plus a message line, or `DENY: <reason>`. Every failure (no key, rate limit, OpenAI error, bad input) is sent as a `DENY` line. If `GATEKEEPER_TOKEN` is set on the server, send it as `Authorization: Bearer <token>`.
+`POST /api/approve` with JSON `{"app": "YouTube", "reason": "...", "minutes_today": 42}` (optional `"sessions"`, `"trust"` 300–850 credit score, `"daily_limit"`, `"focus"`, `"history"`, `"proof_url"`, and `"image"` as a `data:image/jpeg;base64,...` screenshot). The reply is plain text: `APPROVE: <minutes>` plus a message line, or `DENY: <reason>`. Every failure (no key, rate limit, OpenAI error, bad input) is sent as a `DENY` line. If `GATEKEEPER_TOKEN` is set on the server, send it as `Authorization: Bearer <token>`.
 
-## Apps
+## Apps (Android + Windows WebView2)
 
 - **Android** (`/download/android`): the Vouch page plus a real lock. A guard service watches which app is in front (Usage access) and draws a full-screen "TikTok is locked" card over locked apps (Display over other apps). "Ask Vouch" opens Vouch with that app picked; an approval unlocks only that app until the AI's timer ends. Built with `C:\Editsppwrap` (`python build.py vouch`, `--version N` for updates); the code is `Blocker.java` + the `VouchNative` bridge in `MainActivity.java`. Tested on an Android 14 emulator: locked app covered, Ask Vouch pre-picks it, approved break unlocks it.
 - **Windows** (`/download/windows`, source in `windows/`, build with `sh windows/build.sh`): the Vouch page in a WebView2 window plus a guard that checks the window in front every second. A browser tab showing a locked site (YouTube, TikTok, Instagram, Reddit, Netflix, Discord, Facebook, Snapchat) or the Discord/Netflix app gets minimized and Vouch comes up with that app picked. Closing the window keeps it guarding from the tray; it starts with Windows. `VOUCH_NO_INSTALL=1` skips the self-install for test runs.
 - Both apps talk to the page through `window.VouchNative` (`unlock(app, minutes)`, `lock()`, `status()`).
+
+## Python desktop app (`desktop/`, by DeepSeek)
+
+A native `customtkinter` client that enforces the lock on the user's own machine:
+
+- Watches the process table with `psutil` and terminates blocked apps.
+- Shows a topmost overlay asking for a reason, then calls `/api/approve`.
+- Injects today's usage into the request as `minutes_today`.
+- On `APPROVE: N`, keeps the app open for N minutes and re-locks it
+  automatically when the grant expires (`threading.Timer`), killing the process
+  again and folding the elapsed minutes back into today's total.
+
+It tracks usage locally in `usage_log.json`, so it works even if the web app is
+closed. The Vercel endpoint only supplies the verdict; the desktop app parses
+the reply itself and clamps any grant to its own ceiling.
+
+```
+cd desktop
+pip install -r requirements.txt
+python main.py
+```
+
+Point it somewhere else by editing `CONFIG["gatekeeper_mode"]` (`"http"` or
+`"openai"`) and `CONFIG["gatekeeper_url"]` in `desktop/main.py`.
+Set `GATEKEEPER_TOKEN` in the environment if the server requires it.
+
+Note: the desktop app cannot be hosted on Vercel — it needs the user's process
+table, a persistent local ledger and a long-running timer.

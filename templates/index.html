@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Intentionality Interceptor</title>
-  <meta name="description" content="An AI gatekeeper that only unlocks distracting apps for intentional reasons, checks your proof, and holds you to your word.">
+  <title>Vouch</title>
+  <meta name="description" content="Vouch: an AI gatekeeper that only unlocks distracting apps for intentional reasons, checks your proof, and keeps a credit score of your word.">
+  <meta name="theme-color" content="#f6f5f1">
   <link rel="icon" href="/static/legion-mark-48.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -13,23 +14,29 @@
 <body>
   <main class="wrap">
     <header class="top">
-      <div class="brand"><span class="dot"></span> Intentionality Interceptor</div>
-      <div class="stats">
-        <span title="Minutes spent on distracting apps today"><b id="usageNum">0</b> min today · <b id="sessNum">0</b> sessions</span>
-        <span class="trust" id="trustPill" title="How well your check-ins matched what you said you'd do">Trust <b id="trustNum">70</b></span>
-      </div>
+      <div class="brand">Vouch</div>
+      <div class="today"><b id="usageNum">0</b><span id="limitNote"></span> min today · <b id="sessNum">0</b> unlocks</div>
     </header>
 
-    <div class="honest" id="honest">
-      <strong>This only works if you're honest.</strong>
-      <span id="honestText">If you keep lying to yourself, uninstall the app.</span>
-    </div>
+    <p class="honest" id="honest">If you keep lying to yourself, uninstall the app.</p>
 
-    <section id="askView" class="card">
-      <h1>Why do you want to open it?</h1>
-      <p class="sub">Name a real task and prove it, or be honest that you want a break. Tasks without proof get 5 minutes at most.</p>
+    <section class="score" aria-label="Your trust score">
+      <svg viewBox="0 0 200 112" class="gauge" aria-hidden="true">
+        <path d="M14 100 A86 86 0 0 1 186 100" class="track"/>
+        <path d="M14 100 A86 86 0 0 1 186 100" class="fill" id="gaugeFill"/>
+      </svg>
+      <div class="score-num"><span id="scoreNum">700</span></div>
+      <div class="score-tier" id="scoreTier">Good</div>
+      <div class="score-meta">
+        <span>You keep <b id="shareNum">75%</b> of any time granted</span>
+        <span id="streakText"></span>
+      </div>
+      <div class="score-next" id="scoreNext"></div>
+    </section>
 
-      <div class="label">App</div>
+    <section id="askView" class="panel">
+      <h1>What do you want to open, and why?</h1>
+
       <div class="chips" id="chips">
         <button type="button" class="chip" data-app="YouTube">YouTube</button>
         <button type="button" class="chip" data-app="TikTok">TikTok</button>
@@ -37,76 +44,147 @@
         <button type="button" class="chip" data-app="Discord">Discord</button>
         <button type="button" class="chip" data-app="Netflix">Netflix</button>
         <button type="button" class="chip" data-app="Reddit">Reddit</button>
-        <input class="chip-input" id="customApp" placeholder="Other…" maxlength="40">
+        <input class="chip-input" id="customApp" placeholder="Other" maxlength="40" aria-label="Other app">
       </div>
 
-      <label class="label" for="reason">Reason</label>
-      <textarea id="reason" maxlength="600" rows="3" placeholder="e.g. Watch Tyler DeWitt's video on balancing equations for my chemistry assignment due Thursday"></textarea>
+      <textarea id="reason" maxlength="600" rows="3" aria-label="Reason" placeholder="Be specific. A task with a finish line, or an honest break."></textarea>
 
-      <div class="label">Proof <span class="hint">needed for tasks, not for breaks</span></div>
       <div class="proof">
-        <input id="proofUrl" class="text" type="url" maxlength="500" placeholder="Paste the exact link (the video, the assignment, the chat)">
-        <label class="ghost small file">
+        <input id="proofUrl" class="text" type="url" maxlength="500" placeholder="Proof link (needed for tasks)" aria-label="Proof link">
+        <label class="btn-line file">
           <input type="file" id="proofFile" accept="image/*" hidden>
-          Add screenshot
+          Screenshot
         </label>
       </div>
       <div class="thumb hidden" id="thumbWrap">
         <img id="thumb" alt="Screenshot you attached as proof">
-        <button type="button" class="ghost small" id="removeImg">Remove</button>
+        <button type="button" class="link" id="removeImg">Remove</button>
       </div>
 
-      <button class="go" id="goBtn" type="button">Ask the gatekeeper</button>
+      <div class="cooldown hidden" id="cooldown">Cooling down after a broken promise · <b id="cooldownLeft">0:00</b></div>
+      <button class="btn" id="goBtn" type="button">Ask</button>
       <div class="error" id="error" role="alert"></div>
-      {% if not ai %}<p class="demo-note">Demo mode: the AI key isn't set on this server yet, so simple built-in rules decide.</p>{% endif %}
+      <p class="fine">Tasks without proof get 5 minutes at most. Breaks don't need proof. Every unlock ends with a check-in.</p>
+      {% if not ai %}<p class="fine">Demo mode: no AI key on this server, simple rules decide.</p>{% endif %}
     </section>
 
-    <section id="verdictView" class="card hidden" aria-live="polite">
+    <section id="verdictView" class="panel hidden" aria-live="polite">
       <div class="verdict" id="verdictWord"></div>
       <p class="verdict-msg" id="verdictMsg"></p>
+      <p class="cut hidden" id="cutNote"></p>
+      <div class="receipt hidden" id="receipt">
+        <div class="receipt-head">Receipt <span id="receiptWhen"></span></div>
+        <div class="said">You said <q id="receiptSaid"></q></div>
+        <div class="did">Then <q id="receiptDid"></q></div>
+      </div>
+      <div class="self-note hidden" id="selfNote">
+        <div class="receipt-head">From you</div>
+        <q id="selfNoteText"></q>
+      </div>
       <div class="timer hidden" id="timer">00:00</div>
       <div class="timer-sub hidden" id="timerSub"></div>
       <div class="row">
-        <button class="go hidden" id="doneBtn" type="button">I'm done</button>
-        <button class="ghost" id="backBtn" type="button">Try another reason</button>
+        <button class="btn hidden" id="doneBtn" type="button">I'm done</button>
+        <button class="btn-line" id="backBtn" type="button">Try again</button>
       </div>
     </section>
 
-    <section id="checkinView" class="card hidden" aria-live="polite">
+    <section id="checkinView" class="panel hidden" aria-live="polite">
       <div id="checkinAsk">
         <h1>Check-in</h1>
         <p class="sub" id="checkinIntro"></p>
-        <label class="label" for="report">What did you actually do?</label>
-        <textarea id="report" maxlength="600" rows="3" placeholder="Be specific. Being honest about drifting still counts for something."></textarea>
+        <textarea id="report" maxlength="600" rows="3" aria-label="What you actually did" placeholder="What did you actually do? Honesty about drifting still counts for something."></textarea>
         <div class="row">
-          <button class="go" id="reportBtn" type="button">Submit check-in</button>
-          <button class="ghost" id="skipBtn" type="button">Skip (counts as broken)</button>
+          <button class="btn" id="reportBtn" type="button">Submit</button>
+          <button class="btn-line" id="skipBtn" type="button">Skip (counts as broken)</button>
         </div>
         <div class="error" id="checkinError" role="alert"></div>
       </div>
       <div id="checkinResult" class="hidden">
         <div class="verdict" id="checkinWord"></div>
         <p class="verdict-msg" id="checkinMsg"></p>
-        <p class="trust-change" id="trustChange"></p>
+        <p class="score-change" id="trustChange"></p>
         <p class="uninstall hidden" id="uninstallMsg">If you keep lying to yourself, uninstall the app. It can't help someone who won't be honest with it.</p>
-        <button class="go" id="newBtn" type="button">New request</button>
+        <button class="btn" id="newBtn" type="button">Done</button>
       </div>
     </section>
 
-    <details class="card demo hidden" id="demoBox">
+    <section class="panel record" id="recordView">
+      <div class="record-top">
+        <h2>Your record</h2>
+        <span class="record-sum" id="recordSum"></span>
+      </div>
+      <p class="sub" id="recordEmpty">Every check-in lands here: what you said next to what you did.</p>
+      <ol class="record-list" id="recordList"></ol>
+    </section>
+
+    <section class="panel week">
+      <div class="record-top">
+        <h2>This week</h2>
+        <span class="record-sum" id="weekSum"></span>
+      </div>
+      <div class="bars" id="weekBars"></div>
+      <div class="legend"><span class="key purpose"></span>On purpose <span class="key drift"></span>Drifting</div>
+    </section>
+
+    <details class="panel rules">
+      <summary><h2>Your rules</h2><span class="record-sum" id="rulesSum"></span></summary>
+      <label class="rule">
+        <span>Daily limit</span>
+        <select id="limitSel">
+          <option value="0">None</option>
+          <option value="30">30 min</option>
+          <option value="60">1 hour</option>
+          <option value="90">1.5 hours</option>
+          <option value="120">2 hours</option>
+          <option value="180">3 hours</option>
+        </select>
+      </label>
+      <div class="rule">
+        <label class="check"><input type="checkbox" id="focusOn"> Focus hours</label>
+        <span class="times"><input type="time" id="focusFrom" value="16:00" aria-label="Focus from"> – <input type="time" id="focusTo" value="20:00" aria-label="Focus to"></span>
+      </div>
+      <p class="fine">During focus hours only proven tasks get through. Past your daily limit, breaks are denied.</p>
+      <label class="rule col">
+        <span>Note to yourself, shown when you're denied</span>
+        <textarea id="noteText" rows="2" maxlength="300" placeholder="e.g. You want the scholarship. Scrolling won't get you there."></textarea>
+      </label>
+    </details>
+
+    <section class="panel tiers">
+      <h2>How the score works</h2>
+      <ul class="tier-list">
+        <li><span>800+</span><span>Excellent</span><span>100% of time</span></li>
+        <li><span>740</span><span>Very good</span><span>90%</span></li>
+        <li><span>670</span><span>Good</span><span>75%</span></li>
+        <li><span>580</span><span>Fair</span><span>50%</span></li>
+        <li><span>300</span><span>Poor</span><span>25%, tasks need proof</span></li>
+      </ul>
+      <p class="fine">Kept your word: +20. Broke it or skipped the check-in: −50 and a 10-minute cooldown. Everyone starts at 700.</p>
+    </section>
+
+    <section class="panel get" id="getApps">
+      <h2>Get Vouch</h2>
+      <p class="sub">The apps lock the real thing: Android draws over blocked apps, Windows closes blocked programs until you're unlocked.</p>
+      <div class="row">
+        <a class="btn-line" href="/download/android">Android app</a>
+        <a class="btn-line" href="/download/windows">Windows app</a>
+      </div>
+    </section>
+
+    <details class="panel demo hidden" id="demoBox">
       <summary>Demo controls</summary>
-      <p class="sub">For judges and testing: set today's usage and trust to see how the gatekeeper changes.</p>
       <div class="demo-row">
         <span class="demo-label">Usage</span>
         <input type="range" id="usageSlider" min="0" max="300" step="5" value="0" aria-label="Today's usage in minutes">
         <span id="sliderVal">0 min</span>
       </div>
       <div class="demo-row">
-        <span class="demo-label">Trust</span>
-        <input type="range" id="trustSlider" min="0" max="100" step="5" value="70" aria-label="Trust score">
-        <span id="trustVal">70</span>
+        <span class="demo-label">Score</span>
+        <input type="range" id="trustSlider" min="300" max="850" step="10" value="700" aria-label="Trust score">
+        <span id="trustVal">700</span>
       </div>
-      <button class="ghost" id="resetBtn" type="button">Reset everything</button>
+      <button class="btn-line" id="resetBtn" type="button">Reset everything</button>
     </details>
 
     <footer>Made by Legion · Awsaa-Legion@proton.me</footer>

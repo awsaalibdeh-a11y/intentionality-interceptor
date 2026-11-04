@@ -6,7 +6,8 @@
   <title>Vouch</title>
   <meta name="description" content="Vouch: an AI gatekeeper that only unlocks distracting apps for intentional reasons, checks your proof, and keeps a credit score of your word.">
   <meta name="theme-color" content="#f6f5f1">
-  <link rel="icon" href="/static/legion-mark-48.png">
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
@@ -32,6 +33,14 @@
         <span id="streakText"></span>
       </div>
       <div class="score-next" id="scoreNext"></div>
+    </section>
+
+    <section class="panel setup hidden" id="setupView">
+      <h2>Set up the lock</h2>
+      <p class="sub">Three switches so Vouch can actually stop you. You can turn them off any time in Settings.</p>
+      <div class="setup-row"><span><b>Usage access</b><br><small>to see which app is open</small></span><button class="btn-line" id="setUsage" type="button">Allow</button></div>
+      <div class="setup-row"><span><b>Display over other apps</b><br><small>to cover a locked app</small></span><button class="btn-line" id="setOverlay" type="button">Allow</button></div>
+      <div class="setup-row"><span><b>Guard</b><br><small>keeps watching in the background</small></span><button class="btn-line" id="setGuard" type="button">Turn on</button></div>
     </section>
 
     <section id="askView" class="panel">

@@ -5,3 +5,5 @@ __pycache__/
 
 .vercel
 .env*
+dist/
+windows/nuget/

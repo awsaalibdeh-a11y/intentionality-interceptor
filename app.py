@@ -13,19 +13,21 @@ import socket
 import time
 from collections import defaultdict, deque
 from html import unescape
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request
 
+from judge import CLAUDE_JUDGE_PROMPT, build_judge_message, decide, parse_judgment, verdict_text
 from prompts import (
     CLAUDE_CHECKIN_PROMPT,
-    CLAUDE_TIMER_PROMPT,
+    SCORE_MAX,
+    SCORE_MIN,
+    SCORE_START,
     build_checkin_message,
-    build_timer_message,
     parse_checkin_verdict,
-    parse_timer_verdict,
+    score_tier,
 )
 
 load_dotenv()
@@ -74,27 +76,25 @@ def _int(value, low, high, default):
         return default
 
 
-def ask_model(system, message, image=None):
+def ask_model(system, message, image=None, as_json=False, max_tokens=80):
     content = message
     if image:
         content = [
             {"type": "text", "text": message},
             {"type": "image_url", "image_url": {"url": image, "detail": "low"}},
         ]
-    resp = requests.post(
-        OPENAI_URL,
-        headers={"Authorization": f"Bearer {_key()}"},
-        json={
-            "model": OPENAI_MODEL,
-            "temperature": 0,
-            "max_tokens": 80,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": content},
-            ],
-        },
-        timeout=25,
-    )
+    body = {
+        "model": OPENAI_MODEL,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": content},
+        ],
+    }
+    if as_json:
+        body["response_format"] = {"type": "json_object"}
+    resp = requests.post(OPENAI_URL, headers={"Authorization": f"Bearer {_key()}"}, json=body, timeout=25)
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
@@ -146,10 +146,27 @@ def check_link(url):
                 title = ""
             if title:
                 return f'link {url[:200]} with page title "{title}"'
-            return f"link {url[:200]} (the site blocked reading the page, so judge by the address itself)"
+            words = re.sub(r"[-_/]+", " ", unquote(urlparse(url).path)).strip()[:150]
+            return f'link to {urlparse(url).hostname} (page could not be read; the address says: "{words}")'
     except Exception:
         pass
     return "a link that could not be opened (unverified)"
+
+
+def _history(data):
+    """Up to 5 past sessions from the client, newest first, trimmed."""
+    items = data.get("history")
+    if not isinstance(items, list):
+        return None
+    out = []
+    for h in items[:5]:
+        if isinstance(h, dict) and h.get("reason"):
+            out.append({
+                "reason": str(h.get("reason", ""))[:150],
+                "report": str(h.get("report", "") or "(skipped the check-in)")[:150],
+                "kept": bool(h.get("kept")),
+            })
+    return out or None
 
 
 def _proof(data):
@@ -172,21 +189,38 @@ BREAK = re.compile(r"\b(break|rest|relax|unwind|chill|tired|deserve|finished|don
 PUSHY = re.compile(r"\b(ignore|override|system|developer|admin|approve)\b|[A-Z]{6,}", re.I)
 
 
-def demo_verdict(reason, usage, proof):
-    """Rough stand-in for the AI, used only when no API key is set."""
-    if len(reason) < 12 or VAGUE.search(reason) or PUSHY.search(reason):
-        return "DENY: That reason has no specific task or finish line. Name exactly what you'll do and when you'll be done."
-    if BREAK.search(reason):
-        if usage < 30:
-            return "APPROVE: 25\nYou've barely touched your apps today, so enjoy a real 25-minute break."
-        if usage < 90:
-            return "APPROVE: 12\nA 12-minute break fits; you've already had some screen time today."
-        if usage < 180:
-            return "APPROVE: 5\nJust 5 minutes, since today's usage is already high."
-        return "DENY: You've spent over three hours on these apps today. A walk or a glass of water will rest you more."
-    if not proof:
-        return "APPROVE: 5\nFive minutes on your word. Add a link or screenshot next time to unlock the full time."
-    return "APPROVE: 10\nTen minutes for that task. Close it when you're done."
+def demo_judgment(reason, has_proof):
+    """Rough stand-in for the AI judge, used only when no API key is set."""
+    if PUSHY.search(reason):
+        category = "MANIPULATION"
+    elif len(reason) < 12 or VAGUE.search(reason):
+        category = "VAGUE"
+    elif BREAK.search(reason):
+        category = "BREAK"
+    else:
+        category = "TASK"
+    return {
+        "category": category,
+        "proof": "VERIFIED" if category == "TASK" and has_proof else "NONE",
+        "task_minutes": 10 if category == "TASK" else 0,
+        "earned": bool(re.search(r"\b(finished|done with)\b", reason, re.I)),
+        "repeat_broken": False,
+        "note": "" if category in ("TASK", "BREAK") else "That reason has no specific task or finish line. Name exactly what you'll do.",
+    }
+
+
+def judge_request(data, target, reason):
+    """Ask the AI judge (or the demo rules). Returns (judgment or None, source)."""
+    if not _key():
+        return demo_judgment(reason, bool(data.get("proof_url") or data.get("image"))), "demo"
+    proof, image = _proof(data)
+    try:
+        reply = ask_model(CLAUDE_JUDGE_PROMPT, build_judge_message(target, reason, proof, _history(data)),
+                          image, as_json=True, max_tokens=160)
+        return parse_judgment(reply), "ai"
+    except Exception as exc:
+        app.logger.warning("judge call failed: %s", type(exc).__name__)
+        return None, "error"
 
 
 # ---- routes ---------------------------------------------------------------
@@ -194,6 +228,18 @@ def demo_verdict(reason, usage, proof):
 @app.get("/")
 def index():
     return render_template("index.html", ai=bool(_key()))
+
+
+DOWNLOADS = {
+    "android": os.environ.get("ANDROID_URL", "https://huggingface.co/datasets/Death242/downloads/resolve/main/vouch.apk"),
+    "windows": os.environ.get("WINDOWS_URL", "https://huggingface.co/datasets/Death242/downloads/resolve/main/Vouch.exe"),
+}
+
+
+@app.get("/download/<platform>")
+def download(platform):
+    url = DOWNLOADS.get(platform)
+    return redirect(url) if url else ("Not found", 404)
 
 
 @app.get("/health")
@@ -209,23 +255,15 @@ def check():
     if not target or not reason:
         return jsonify(error="Pick an app and type your reason."), 400
     usage = _int(data.get("usage_minutes"), 0, 1440, 0)
-    sessions = _int(data.get("sessions"), 0, 200, 0)
-    trust = _int(data.get("trust"), 0, 100, 50)
+    trust = _int(data.get("trust"), SCORE_MIN, SCORE_MAX, SCORE_START)
+    if _key() and not _allowed(_client_ip()):
+        return jsonify(error="Too many requests for now. Take that as a sign and try again later."), 429
 
-    source, reply = "demo", None
-    if _key():
-        if not _allowed(_client_ip()):
-            return jsonify(error="Too many requests for now. Take that as a sign and try again later."), 429
-        proof, image = _proof(data)
-        try:
-            reply = ask_model(CLAUDE_TIMER_PROMPT, build_timer_message(target, reason, usage, sessions, trust, proof), image)
-            source = "ai"
-        except Exception as exc:
-            app.logger.warning("gatekeeper call failed: %s", type(exc).__name__)
-    if reply is None:
-        reply = demo_verdict(reason, usage, data.get("proof_url") or data.get("image"))
-    minutes, message = parse_timer_verdict(reply)
-    return jsonify(approved=minutes > 0, minutes=minutes, message=message, source=source)
+    judgment, source = judge_request(data, target, reason)
+    granted, minutes, message = decide(judgment, usage, trust, _int(data.get("daily_limit"), 0, 1440, 0), bool(data.get("focus")))
+    tier, share = score_tier(trust)
+    return jsonify(approved=minutes > 0, minutes=minutes, granted=granted, tier=tier, share=share,
+                   message=message, source=source, judgment=judgment)
 
 
 @app.post("/api/checkin")
@@ -259,7 +297,7 @@ def _plain(text, status=200):
 
 @app.post("/api/approve")
 def approve():
-    """Endpoint for the desktop app: replies with the model's raw verdict text.
+    """Endpoint for the desktop app: replies with the verdict as APPROVE/DENY text.
 
     The desktop app parses the reply itself, so anything that goes wrong here is
     sent as a DENY line, never as an approval.
@@ -275,22 +313,16 @@ def approve():
     if not target or not reason:
         return _plain("DENY: Missing app or reason.", 400)
     usage = _int(data.get("minutes_today", data.get("usage_minutes")), 0, 1440, 0)
-    sessions = _int(data.get("sessions"), 0, 200, 0)
-    trust = _int(data.get("trust"), 0, 100, 50) if "trust" in data else None
+    trust = _int(data.get("trust"), SCORE_MIN, SCORE_MAX, SCORE_START) if "trust" in data else None
     if not _key():
         return _plain("DENY: The gatekeeper isn't configured yet, so the lock stays on.")
     if not _allowed(_client_ip()):
         return _plain("DENY: Too many requests for now. Try again later.", 429)
-    proof, image = _proof(data)
-    try:
-        reply = ask_model(CLAUDE_TIMER_PROMPT, build_timer_message(target, reason, usage, sessions, trust, proof), image)
-    except Exception as exc:
-        app.logger.warning("gatekeeper call failed: %s", type(exc).__name__)
+    judgment, source = judge_request(data, target, reason)
+    if judgment is None:
         return _plain("DENY: The gatekeeper couldn't be reached, so the lock stays on.")
-    minutes, message = parse_timer_verdict(reply)
-    if minutes:
-        return _plain(f"APPROVE: {minutes}\n{message}")
-    return _plain(f"DENY: {message}")
+    _, minutes, message = decide(judgment, usage, trust, _int(data.get("daily_limit"), 0, 1440, 0), bool(data.get("focus")))
+    return _plain(verdict_text(minutes, message))
 
 
 if __name__ == "__main__":

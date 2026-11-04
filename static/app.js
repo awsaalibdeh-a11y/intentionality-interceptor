@@ -347,6 +347,11 @@ function showVerdict(data, reason) {
   } else {
     ["timer", "timerSub", "doneBtn"].forEach((id) => $(id).classList.add("hidden"));
     $("backBtn").classList.remove("hidden");
+    if (data.lock_minutes) {
+      lockFor(data.lock_minutes);
+      $("cutNote").classList.remove("hidden");
+      $("cutNote").textContent = `Trying to game it locks everything for ${data.lock_minutes} min (the AI's call).`;
+    }
   }
 }
 
@@ -399,13 +404,20 @@ function showCheckin() {
   $("report").focus();
 }
 
-function checkinResult(kept, message, report) {
+function lockFor(minutes) {
+  save(COOLDOWN, Date.now() + minutes * 60000);
+  native("lock");
+  renderCooldown();
+}
+
+function checkinResult(kept, message, report, lockMinutes) {
   const c = load(CHECKIN, null);
   if (c) {
     save(HISTORY, [{ ...c, report, kept, message, at: Date.now() }, ...history()].slice(0, 30));
     addDayMinutes(kept ? "purpose" : "drift", c.used);
   }
-  if (!kept) save(COOLDOWN, Date.now() + COOLDOWN_MIN * 60000);
+  const lock = kept ? 0 : lockMinutes || COOLDOWN_MIN;
+  if (lock) lockFor(lock);
   const before = score();
   setScore(before + (kept ? KEPT_POINTS : BROKE_POINTS));
   const after = score();
@@ -416,7 +428,7 @@ function checkinResult(kept, message, report) {
   $("checkinWord").textContent = kept ? "KEPT YOUR WORD" : "BROKE YOUR WORD";
   $("checkinMsg").textContent = message;
   $("trustChange").textContent = `Score ${before} → ${after} (${tier(after)[1]}, ${Math.round(tier(after)[2] * 100)}% of time)` +
-    (kept ? "" : ` · ${COOLDOWN_MIN}-minute cooldown`);
+    (kept ? "" : ` · everything locked for ${lock} min (the AI's call)`);
   $("uninstallMsg").classList.toggle("hidden", kept);
 }
 
@@ -428,8 +440,9 @@ $("reportBtn").addEventListener("click", async () => {
   $("reportBtn").disabled = true;
   $("reportBtn").textContent = "Checking…";
   try {
-    const data = await post("/api/checkin", { ...c, report });
-    checkinResult(data.kept, data.message, report);
+    const broken = history().slice(0, 10).filter((e) => !e.kept).length;
+    const data = await post("/api/checkin", { ...c, report, broken_recently: broken });
+    checkinResult(data.kept, data.message, report, data.lock_minutes);
   } catch (err) {
     $("checkinError").textContent = err.message || "Couldn't reach the gatekeeper. Try again.";
   } finally {
@@ -438,7 +451,7 @@ $("reportBtn").addEventListener("click", async () => {
   }
 });
 $("skipBtn").addEventListener("click", () => {
-  if (load(CHECKIN, null)) checkinResult(false, "Skipping the check-in is a way of not looking. That counts as broken.", "");
+  if (load(CHECKIN, null)) checkinResult(false, "Skipping the check-in is a way of not looking. That counts as broken.", "", 45);
 });
 
 function resetAsk() {

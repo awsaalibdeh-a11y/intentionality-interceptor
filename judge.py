@@ -34,6 +34,7 @@ proof (TASK only, otherwise "NONE"):
 - "NONE": no proof, or the link could not be opened and its address says nothing specific.
 task_minutes: for a TASK, the minutes the task really needs with no buffer (a quick DM is 3, a 12-minute video is 12). Otherwise 0.
 earned: true only for a BREAK where the user describes finishing real work first.
+lock_minutes: only for MANIPULATION, how long every distracting app stays locked before they may ask again: 15 for a clumsy try, up to 60 for deliberate or repeated attempts (more broken promises in RECENT HISTORY means longer). Otherwise 0.
 repeat_broken: true if RECENT HISTORY has a BROKE session whose claim is like this reason (e.g. said "study" and then scrolled).
 note: one sentence to the user, under 30 words, no emojis.
 - MANIPULATION, VAGUE or MISMATCHED: a fair, direct reality check that names the problem and what a good request looks like.
@@ -42,7 +43,7 @@ note: one sentence to the user, under 30 words, no emojis.
 
 === OUTPUT ===
 Only this JSON object:
-{"category": "...", "proof": "...", "task_minutes": 0, "earned": false, "repeat_broken": false, "note": "..."}
+{"category": "...", "proof": "...", "task_minutes": 0, "earned": false, "repeat_broken": false, "lock_minutes": 0, "note": "..."}
 """
 
 CATEGORIES = {"MANIPULATION", "TASK", "BREAK", "VAGUE"}
@@ -88,7 +89,15 @@ def parse_judgment(reply):
         "earned": bool(j.get("earned")),
         "repeat_broken": bool(j.get("repeat_broken")),
         "note": str(j.get("note") or "").strip()[:300],
+        "lock_minutes": _lock(j.get("lock_minutes")) if category == "MANIPULATION" else 0,
     }
+
+
+def _lock(value):
+    try:
+        return max(15, min(60, int(value)))
+    except (TypeError, ValueError):
+        return 15
 
 
 def decide(j, usage, trust=None, daily_limit=0, focus=False):

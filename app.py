@@ -263,7 +263,8 @@ def check():
     granted, minutes, message = decide(judgment, usage, trust, _int(data.get("daily_limit"), 0, 1440, 0), bool(data.get("focus")))
     tier, share = score_tier(trust)
     return jsonify(approved=minutes > 0, minutes=minutes, granted=granted, tier=tier, share=share,
-                   message=message, source=source, judgment=judgment)
+                   message=message, source=source, judgment=judgment,
+                   lock_minutes=(judgment or {}).get("lock_minutes", 0))
 
 
 @app.post("/api/checkin")
@@ -280,15 +281,16 @@ def checkin():
     reply = None
     if _key() and _allowed(_client_ip()):
         try:
-            reply = ask_model(CLAUDE_CHECKIN_PROMPT, build_checkin_message(target, reason, minutes, used, report))
+            reply = ask_model(CLAUDE_CHECKIN_PROMPT, build_checkin_message(
+                target, reason, minutes, used, report, _int(data.get("broken_recently"), 0, 30, 0)))
         except Exception as exc:
             app.logger.warning("check-in call failed: %s", type(exc).__name__)
     if reply is None:
         words = {w for w in re.findall(r"[a-z]{5,}", reason.lower())}
         kept = len(report) >= 15 and bool(words & set(re.findall(r"[a-z]{5,}", report.lower())))
-        reply = "KEPT: Your report matches what you planned." if kept else "BROKE: Your report doesn't match what you said you'd do."
-    kept, message = parse_checkin_verdict(reply)
-    return jsonify(kept=kept, message=message)
+        reply = "KEPT: Your report matches what you planned." if kept else "BROKE 30: Your report doesn't match what you said you'd do."
+    kept, message, lock = parse_checkin_verdict(reply)
+    return jsonify(kept=kept, message=message, lock_minutes=lock)
 
 
 def _plain(text, status=200):

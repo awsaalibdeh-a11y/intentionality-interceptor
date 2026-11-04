@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Intentionality Interceptor</title>
+  <meta name="description" content="An AI gatekeeper that only unlocks distracting apps for intentional reasons, and decides how long you get.">
+  <link rel="icon" href="/static/legion-mark-48.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="wrap">
+    <header class="top">
+      <div class="brand"><span class="dot"></span> Intentionality Interceptor</div>
+      <div class="usage" id="usage" title="Minutes spent on distracting apps today">
+        <span class="usage-num" id="usageNum">0</span> min today · <span id="sessNum">0</span> sessions
+      </div>
+    </header>
+
+    <section id="askView" class="card">
+      <h1>Why do you want to open it?</h1>
+      <p class="sub">Name a real task, or be honest that you want a break. The gatekeeper looks at today's usage and decides how many minutes you get.</p>
+
+      <div class="label">App</div>
+      <div class="chips" id="chips">
+        <button type="button" class="chip" data-app="YouTube">YouTube</button>
+        <button type="button" class="chip" data-app="TikTok">TikTok</button>
+        <button type="button" class="chip" data-app="Instagram">Instagram</button>
+        <button type="button" class="chip" data-app="Discord">Discord</button>
+        <button type="button" class="chip" data-app="Netflix">Netflix</button>
+        <button type="button" class="chip" data-app="Reddit">Reddit</button>
+        <input class="chip-input" id="customApp" placeholder="Other…" maxlength="40">
+      </div>
+
+      <label class="label" for="reason">Reason</label>
+      <textarea id="reason" maxlength="600" rows="4" placeholder="e.g. Watch the 12-min Khan Academy video on integration by parts for tomorrow's quiz"></textarea>
+
+      <button class="go" id="goBtn" type="button">Ask the gatekeeper</button>
+      <div class="error" id="error" role="alert"></div>
+      {% if not ai %}<p class="demo-note">Demo mode: the AI key isn't set on this server yet, so simple built-in rules decide.</p>{% endif %}
+    </section>
+
+    <section id="verdictView" class="card hidden" aria-live="polite">
+      <div class="verdict" id="verdictWord"></div>
+      <p class="verdict-msg" id="verdictMsg"></p>
+      <div class="timer hidden" id="timer">00:00</div>
+      <div class="timer-sub hidden" id="timerSub"></div>
+      <div class="row">
+        <button class="go hidden" id="doneBtn" type="button">I'm done early</button>
+        <button class="ghost" id="backBtn" type="button">Try another reason</button>
+      </div>
+    </section>
+
+    <details class="card demo">
+      <summary>Demo controls</summary>
+      <p class="sub">For testing: set today's usage to see how the gatekeeper's answer changes.</p>
+      <div class="demo-row">
+        <input type="range" id="usageSlider" min="0" max="300" step="5" value="0" aria-label="Today's usage in minutes">
+        <span id="sliderVal">0 min</span>
+      </div>
+      <button class="ghost" id="resetBtn" type="button">Reset today</button>
+    </details>
+
+    <footer>Made by Legion · Awsaa-Legion@proton.me</footer>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

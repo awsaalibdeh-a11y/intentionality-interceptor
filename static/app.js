@@ -10,6 +10,9 @@ const HISTORY = "ii-history";
 const DAYS = "ii-days";
 const RULES = "ii-rules";
 const COOLDOWN = "ii-cooldown";
+const SOS = "ii-sos";
+const INTRO = "ii-intro";
+const SOS_MINUTES = 3, SOS_COST = 30;
 const DEMO = new URLSearchParams(location.search).has("demo");
 const NATIVE = window.VouchNative || null;
 
@@ -64,9 +67,15 @@ function history() {
 }
 function streak() {
   let n = 0;
-  for (const e of history()) { if (!e.kept) break; n++; }
+  for (const e of history()) {
+    if (e.emergency) continue;
+    if (!e.kept) break;
+    n++;
+  }
   return n;
 }
+// What the AI sees: real check-ins only, not emergency passes.
+function promises() { return history().filter((e) => !e.emergency); }
 
 function rules() {
   return { limit: 0, focusOn: false, focusFrom: "16:00", focusTo: "20:00", note: "", ...load(RULES, {}) };
@@ -133,10 +142,10 @@ function renderRecord() {
   $("recordSum").textContent = h.length ? `Kept ${kept} of ${recent.length}` : "";
   for (const e of h.slice(0, 6)) {
     const li = document.createElement("li");
-    li.className = e.kept ? "kept" : "broke";
+    li.className = e.emergency ? "sos" : e.kept ? "kept" : "broke";
     const top = document.createElement("div");
     top.className = "rec-top";
-    for (const [cls, text] of [["tag", e.kept ? "KEPT" : "BROKE"], ["rec-app", `${e.target} · ${e.used}/${e.minutes} min`], ["rec-when", ago(e.at)]]) {
+    for (const [cls, text] of [["tag", e.emergency ? "EMERGENCY" : e.kept ? "KEPT" : "BROKE"], ["rec-app", `${e.target} · ${e.used}/${e.minutes} min`], ["rec-when", ago(e.at)]]) {
       top.append(Object.assign(document.createElement("span"), { className: cls, textContent: text }));
     }
     const said = document.createElement("div");
@@ -203,6 +212,7 @@ function render() {
   renderScore();
   renderRecord();
   renderWeek();
+  renderBadges();
   $("usageSlider").value = Math.min(300, Math.round(u.minutes));
   $("sliderVal").textContent = Math.round(u.minutes) + " min";
   $("trustSlider").value = score();
@@ -305,7 +315,7 @@ async function ask() {
       usage_minutes: Math.round(u.minutes), sessions: u.sessions, trust: score(),
       daily_limit: r.limit, focus: inFocus(r),
       proof_url: $("proofUrl").value.trim(), image: proofImage,
-      history: history().slice(0, 5).map((e) => ({ reason: e.reason, report: e.report, kept: e.kept })),
+      history: promises().slice(0, 5).map((e) => ({ reason: e.reason, report: e.report, kept: e.kept })),
     });
     showVerdict(data, reason);
   } catch (err) {
@@ -327,7 +337,7 @@ function showVerdict(data, reason) {
   $("cutNote").classList.toggle("hidden", !cut);
   if (cut) $("cutNote").textContent = `Granted ${data.granted} min. Your ${data.tier} score keeps ${Math.round(data.share * 100)}%, so you get ${data.minutes}.`;
 
-  const broke = data.approved ? null : history().slice(0, 5).find((e) => !e.kept);
+  const broke = data.approved ? null : promises().slice(0, 5).find((e) => !e.kept);
   $("receipt").classList.toggle("hidden", !broke);
   if (broke) {
     $("receiptWhen").textContent = `· ${broke.target}, ${ago(broke.at)}`;
@@ -341,7 +351,7 @@ function showVerdict(data, reason) {
   if (data.approved) {
     const u = usage();
     setUsage({ ...u, sessions: u.sessions + 1 });
-    save(ACTIVE, { target, reason, start: Date.now(), minutes: data.minutes });
+    save(ACTIVE, { target, reason, start: Date.now(), minutes: data.minutes, proven: (data.judgment || {}).proof === "VERIFIED" });
     native("unlock", target, data.minutes);
     startTimer();
   } else {
@@ -387,7 +397,13 @@ function endSession(usedMinutes) {
   const used = Math.max(1, Math.round(Math.min(usedMinutes, a.minutes)));
   const u = usage();
   setUsage({ ...u, minutes: u.minutes + used });
-  save(CHECKIN, { target: a.target, reason: a.reason, minutes: a.minutes, used });
+  if (a.emergency) {
+    // Emergency passes skip the check-in; they show in the record so they can't hide.
+    save(HISTORY, [{ target: a.target, reason: a.reason, minutes: a.minutes, used, report: "", kept: true, emergency: true, at: Date.now() }, ...history()].slice(0, 30));
+    render();
+    return resetAsk();
+  }
+  save(CHECKIN, { target: a.target, reason: a.reason, minutes: a.minutes, used, proven: !!a.proven });
   showCheckin();
 }
 
@@ -440,7 +456,7 @@ $("reportBtn").addEventListener("click", async () => {
   $("reportBtn").disabled = true;
   $("reportBtn").textContent = "Checking…";
   try {
-    const broken = history().slice(0, 10).filter((e) => !e.kept).length;
+    const broken = promises().slice(0, 10).filter((e) => !e.kept).length;
     const data = await post("/api/checkin", { ...c, report, broken_recently: broken });
     checkinResult(data.kept, data.message, report, data.lock_minutes);
   } catch (err) {
@@ -499,7 +515,7 @@ $("usageSlider").addEventListener("input", (e) => setUsage({ ...usage(), minutes
 $("trustSlider").addEventListener("input", (e) => setScore(Number(e.target.value)));
 $("resetBtn").addEventListener("click", () => {
   clearInterval(tick);
-  [ACTIVE, CHECKIN, HISTORY, DAYS, COOLDOWN].forEach((k) => save(k, null));
+  [ACTIVE, CHECKIN, HISTORY, DAYS, COOLDOWN, SOS].forEach((k) => save(k, null));
   save(TRUST, SCORE_START);
   native("lock");
   setUsage({ date: today(), minutes: 0, sessions: 0 });
@@ -535,6 +551,108 @@ if (asked) {
   if (chip) chip.click();
   else { $("customApp").value = asked; $("customApp").dispatchEvent(new Event("input")); }
 }
+
+// ---- tabs ----------------------------------------------------------------
+
+function goTab(name) {
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.dataset.tab !== name));
+  document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("on", b.dataset.go === name));
+  window.scrollTo(0, 0);
+}
+document.querySelectorAll(".tabbar button").forEach((b) => b.addEventListener("click", () => goTab(b.dataset.go)));
+
+// ---- emergency pass: 3 minutes, once a day, costs points, no AI ------------
+
+$("sosBtn").addEventListener("click", () => {
+  $("error").textContent = "";
+  if (load(SOS, "") === today()) return ($("error").textContent = "You've used today's emergency pass.");
+  if (!target) return ($("error").textContent = "Pick the app first.");
+  const why = $("reason").value.trim();
+  if (!why) return ($("error").textContent = "Say what the emergency is.");
+  if (!confirm(`Open ${target} for ${SOS_MINUTES} minutes without the AI? It costs ${SOS_COST} points, works once a day, and shows in your record.`)) return;
+  save(SOS, today());
+  setScore(score() - SOS_COST);
+  const u = usage();
+  setUsage({ ...u, sessions: u.sessions + 1 });
+  save(ACTIVE, { target, reason: why, start: Date.now(), minutes: SOS_MINUTES, emergency: true });
+  native("unlock", target, SOS_MINUTES);
+  show("verdictView");
+  $("verdictWord").className = "verdict approve";
+  $("verdictWord").textContent = `EMERGENCY · ${SOS_MINUTES} MIN`;
+  $("verdictMsg").textContent = `−${SOS_COST} points. Handle it and close it.`;
+  startTimer();
+});
+
+// ---- badges ------------------------------------------------------------------
+
+const BADGES = [
+  ["First promise kept", (h) => h.some((e) => e.kept && !e.emergency)],
+  ["3 in a row", () => streak() >= 3],
+  ["7 in a row", () => streak() >= 7],
+  ["Proof pro: 5 proven tasks", (h) => h.filter((e) => e.kept && e.proven).length >= 5],
+  ["Honest even when it hurt", (h) => h.some((e) => !e.kept && /honest|admit|sorry|i drifted|got distracted/i.test(e.report || ""))],
+  ["Very good score", () => score() >= 740],
+  ["Excellent score", () => score() >= 800],
+];
+function renderBadges() {
+  const h = history();
+  const box = $("badgeList");
+  box.textContent = "";
+  for (const [name, test] of BADGES) {
+    const got = !!test(h);
+    box.append(Object.assign(document.createElement("span"), { className: "badge" + (got ? " got" : ""), textContent: name }));
+  }
+}
+
+// ---- AI review of your record ------------------------------------------------
+
+$("reviewBtn").addEventListener("click", async () => {
+  const h = promises().slice(0, 20);
+  if (h.length < 3) {
+    $("reviewEmpty").textContent = "Vouch needs at least 3 check-ins to see a pattern.";
+    return;
+  }
+  $("reviewBtn").disabled = true;
+  $("reviewBtn").textContent = "Thinking…";
+  try {
+    const data = await post("/api/review", {
+      history: h.map((e) => ({ target: e.target, reason: e.reason, report: e.report, kept: e.kept, used: e.used, hour: new Date(e.at).getHours(), day: new Date(e.at).toLocaleDateString("en", { weekday: "short" }) })),
+      score: score(),
+    });
+    $("revPattern").textContent = data.pattern;
+    $("revWorking").textContent = data.working;
+    $("revTry").textContent = data.try_this;
+    $("reviewOut").classList.remove("hidden");
+    $("reviewEmpty").classList.add("hidden");
+  } catch (err) {
+    $("reviewEmpty").textContent = err.message || "Couldn't reach Vouch. Try again.";
+  } finally {
+    $("reviewBtn").disabled = false;
+    $("reviewBtn").textContent = "Review";
+  }
+});
+
+// ---- first-run intro -----------------------------------------------------------
+
+const INTRO_STEPS = [
+  ["Name it.", "Before a distracting app opens, tell Vouch what you want it for. A real task with a finish line, or an honest break."],
+  ["Prove it.", "Tasks need proof: the exact link or a screenshot. The AI checks that it matches. No proof, five minutes at most."],
+  ["Keep your word.", "When time's up, you check in. Keep your word and your score climbs, and a higher score means more time. Lie, and it drops. If you keep lying to yourself, uninstall the app."],
+];
+let introAt = 0;
+function showIntro(i) {
+  introAt = i;
+  $("intro").classList.remove("hidden");
+  $("introStep").textContent = `${i + 1} / ${INTRO_STEPS.length}`;
+  $("introTitle").textContent = INTRO_STEPS[i][0];
+  $("introText").textContent = INTRO_STEPS[i][1];
+  $("introNext").textContent = i === INTRO_STEPS.length - 1 ? "Start" : "Next";
+}
+function closeIntro() { $("intro").classList.add("hidden"); save(INTRO, true); }
+$("introNext").addEventListener("click", () => (introAt < INTRO_STEPS.length - 1 ? showIntro(introAt + 1) : closeIntro()));
+$("introSkip").addEventListener("click", closeIntro);
+$("introAgain").addEventListener("click", () => showIntro(0));
+if (!load(INTRO, false) && !DEMO) showIntro(0);
 
 if (NATIVE) $("getApps").classList.add("hidden");
 renderSetup();

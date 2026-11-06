@@ -119,20 +119,22 @@ class MainForm : Form
 
     readonly WebView2 web = new WebView2();
     readonly NotifyIcon tray = new NotifyIcon();
-    readonly Timer guard = new Timer { Interval = 1000 };
+    readonly Timer guard = new Timer { Interval = 500 };
+    readonly LockCard card;
     readonly string unlockFile = Path.Combine(Program.Data, "unlock.txt");
     readonly string boundsFile = Path.Combine(Program.Data, "window.txt");
     string unlockedApp = "";
     DateTime unlockedUntil = DateTime.MinValue;
     bool quitting, ready;
     string pendingApp;
-    DateTime lastBlock = DateTime.MinValue;
 
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
-    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] internal static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
 
     public MainForm(bool startInTray)
@@ -152,6 +154,7 @@ class MainForm : Form
         }
         catch { }
         LoadUnlock();
+        card = new LockCard(this);
 
         web.Dock = DockStyle.Fill;
         web.DefaultBackgroundColor = BackColor;
@@ -255,37 +258,70 @@ class MainForm : Form
 
     bool Unlocked(string app) { return string.Equals(app, unlockedApp, StringComparison.OrdinalIgnoreCase) && DateTime.Now < unlockedUntil; }
 
+    /// <summary>The locked app a window is showing (a browser tab's title or a locked program), or null.</summary>
+    static string LockedAppIn(IntPtr h)
+    {
+        if (h == IntPtr.Zero || IsIconic(h) || !IsWindowVisible(h)) return null;
+        uint pid; GetWindowThreadProcessId(h, out pid);
+        if (pid == (uint)Process.GetCurrentProcess().Id) return null;
+        string proc;
+        try { proc = Process.GetProcessById((int)pid).ProcessName; } catch { return null; }
+        var sb = new StringBuilder(512); GetWindowText(h, sb, sb.Capacity);
+        string title = sb.ToString();
+        if (Browsers.Contains(proc))
+        {
+            foreach (var kv in Sites)
+                foreach (var word in kv.Value)
+                    if (title.IndexOf(word, StringComparison.OrdinalIgnoreCase) >= 0) return kv.Key;
+            return null;
+        }
+        foreach (var kv in Programs)
+            if (string.Equals(proc, kv.Value, StringComparison.OrdinalIgnoreCase)) return kv.Key;
+        return null;
+    }
+
+    // Every half second: if the window in front shows a locked app, cover that window with the lock card. The card
+    // stays while that window still shows it, and goes when the tab changes, the window closes, or it is unlocked.
     void Check()
     {
         try
         {
-            IntPtr h = GetForegroundWindow();
-            if (h == IntPtr.Zero || h == Handle) return;
-            uint pid; GetWindowThreadProcessId(h, out pid);
-            if (pid == (uint)Process.GetCurrentProcess().Id) return;
-            string proc;
-            try { proc = Process.GetProcessById((int)pid).ProcessName; } catch { return; }
-            var sb = new StringBuilder(512); GetWindowText(h, sb, sb.Capacity);
-            string title = sb.ToString();
-            string app = null;
-            if (Browsers.Contains(proc))
+            if (card.Visible)
             {
-                foreach (var kv in Sites)
-                    foreach (var word in kv.Value)
-                        if (title.IndexOf(word, StringComparison.OrdinalIgnoreCase) >= 0) { app = kv.Key; break; }
+                string still = LockedAppIn(card.Target);
+                if (still == null || Unlocked(still)) { card.Hide(); Log("card hidden"); return; }
+                card.Cover(still);
+                return;
             }
-            else
-            {
-                foreach (var kv in Programs)
-                    if (string.Equals(proc, kv.Value, StringComparison.OrdinalIgnoreCase)) { app = kv.Key; break; }
-            }
+            IntPtr h = TestWindow() ?? GetForegroundWindow();
+            if (h == Handle) return;
+            string app = LockedAppIn(h);
             if (app == null || Unlocked(app)) return;
-            ShowWindow(h, 6);   // SW_MINIMIZE
-            if ((DateTime.Now - lastBlock).TotalSeconds > 2) ShowVouch(app);
-            lastBlock = DateTime.Now;
+            card.Show(h, app);
+            Log("card shown " + app);
         }
         catch { }
     }
+
+    // Test runs can point the guard at one window by its title instead of the window in front
+    // (Windows won't let a test pull a window to the front while someone is using the PC).
+    static IntPtr? TestWindow()
+    {
+        var want = Environment.GetEnvironmentVariable("VOUCH_TEST_WINDOW");
+        if (string.IsNullOrEmpty(want)) return null;
+        foreach (var p in Process.GetProcesses())
+            if (p.MainWindowHandle != IntPtr.Zero && p.MainWindowTitle.IndexOf(want, StringComparison.OrdinalIgnoreCase) >= 0) return p.MainWindowHandle;
+        return IntPtr.Zero;
+    }
+
+    internal static void Log(string what)
+    {
+        var path = Environment.GetEnvironmentVariable("VOUCH_LOG");   // test runs only
+        if (string.IsNullOrEmpty(path)) return;
+        try { File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss.f") + " " + what + Environment.NewLine); } catch { }
+    }
+
+    internal void AskFor(string app) { ShowVouch(app); }
 
     void ShowVouch(string app)
     {
@@ -320,4 +356,139 @@ class MainForm : Form
     }
 
     static void Open(string url) { try { if (url.StartsWith("http")) Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { } }
+}
+
+// The lock card: a borderless, always-on-top panel laid exactly over the window that shows a locked app.
+class LockCard : Form
+{
+    readonly MainForm owner;
+    readonly Label title = new Label(), sub = new Label(), honest = new Label(), brand = new Label();
+    readonly Button ask = new Button(), close = new Button(), later = new Button();
+    readonly Panel middle = new Panel();
+    public IntPtr Target { get; private set; }
+    string app = "";
+
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+
+    static readonly Color Bg = Color.FromArgb(246, 245, 241), Ink = Color.FromArgb(29, 29, 27), Muted = Color.FromArgb(139, 138, 132), Bad = Color.FromArgb(196, 85, 63);
+
+    public LockCard(MainForm owner)
+    {
+        this.owner = owner;
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        StartPosition = FormStartPosition.Manual;
+        BackColor = Bg;
+        Text = "Vouch lock";
+        KeyPreview = true;
+
+        Style(brand, "Vouch", 12f, FontStyle.Bold, Ink);
+        Style(title, "", 26f, FontStyle.Bold, Ink);
+        Style(sub, "Tell Vouch why you want it. If your reason holds up, it unlocks for the time the AI picks.", 11.5f, FontStyle.Regular, Muted);
+        Style(honest, "If you keep lying to yourself, uninstall the app.", 10f, FontStyle.Regular, Bad);
+        Pill(ask, "Ask Vouch", Ink, Color.White);
+        Pill(close, "Close the tab", Color.White, Ink);
+        Pill(later, "Not now", Bg, Muted);
+        later.FlatAppearance.BorderSize = 0;
+
+        middle.BackColor = Bg;
+        foreach (Control c in new Control[] { brand, title, sub, honest, ask, close, later }) middle.Controls.Add(c);
+        Controls.Add(middle);
+        Resize += (s, e) => Layout2();
+
+        // Buttons ignore clicks for a moment after the card appears, so a click meant for the video can't press one.
+        ask.Click += (s, e) => { if (!Armed()) return; Hide(); MainForm.Log("ask " + app); owner.AskFor(app); };
+        close.Click += (s, e) => { if (Armed()) CloseTab(); };
+        later.Click += (s, e) => { if (!Armed()) return; Hide(); MainForm.ShowWindow(Target, 6); MainForm.Log("not now"); };   // minimize it
+        foreach (var b in new[] { ask, close, later }) b.TabStop = false;
+    }
+
+    static void Style(Label l, string text, float size, FontStyle fs, Color c)
+    {
+        l.Text = text; l.Font = new Font("Segoe UI", size, fs); l.ForeColor = c; l.AutoSize = false; l.TextAlign = ContentAlignment.MiddleCenter;
+    }
+
+    static void Pill(Button b, string text, Color bg, Color fg)
+    {
+        b.Text = text; b.FlatStyle = FlatStyle.Flat; b.BackColor = bg; b.ForeColor = fg; b.Font = new Font("Segoe UI Semibold", 11f);
+        b.FlatAppearance.BorderColor = Color.FromArgb(230, 228, 221); b.Cursor = Cursors.Hand; b.Size = new Size(260, 46);
+    }
+
+    void Layout2()
+    {
+        int w = Math.Min(520, ClientSize.Width - 40);
+        middle.Size = new Size(w, 400);
+        middle.Location = new Point((ClientSize.Width - w) / 2, Math.Max(10, (ClientSize.Height - 400) / 2));
+        brand.SetBounds(0, 0, w, 28);
+        title.SetBounds(0, 40, w, 56);
+        sub.SetBounds(0, 100, w, 72);
+        honest.SetBounds(0, 176, w, 26);
+        int x = (w - 260) / 2;
+        ask.Location = new Point(x, 222);
+        close.Location = new Point(x, 276);
+        later.Location = new Point(x, 330);
+    }
+
+    DateTime shownAt;
+    bool Armed() { return (DateTime.Now - shownAt).TotalMilliseconds > 600; }
+
+    // The card takes the keyboard (so typing doesn't reach the locked tab), but no key presses a button:
+    // Escape means "Not now", everything else is swallowed.
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape) { shownAt = DateTime.MinValue; later.PerformClick(); }
+        return true;
+    }
+
+    public void Show(IntPtr target, string lockedApp)
+    {
+        Target = target;
+        shownAt = DateTime.Now;
+        Cover(lockedApp);
+        Show();
+        Activate();
+        ActiveControl = null;
+        MainForm.SetForegroundWindow(Handle);
+    }
+
+    public void Cover(string lockedApp)
+    {
+        if (lockedApp != app) { app = lockedApp; title.Text = app + " is locked"; }
+        RECT r;
+        if (!GetWindowRect(Target, out r)) return;
+        var b = Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
+        b.Intersect(Screen.FromHandle(Target).Bounds);   // maximized windows poke a few pixels off-screen
+        if (Bounds != b) Bounds = b;
+    }
+
+    // Ctrl+W in the browser closes just this tab; the guard looks again on its next tick.
+    void CloseTab()
+    {
+        Hide();
+        keybd_event(0x12, 0, 0, UIntPtr.Zero);   // a tap of Alt lets this app hand the focus over
+        keybd_event(0x12, 0, 2, UIntPtr.Zero);
+        MainForm.SetForegroundWindow(Target);
+        System.Threading.Thread.Sleep(150);
+        if (GetForegroundWindow() != Target)
+        {
+            // Never send Ctrl+W unless the locked window really is in front: it would close a tab somewhere else.
+            MainForm.Log("close aborted: could not focus the window");
+            Show(Target, app);
+            return;
+        }
+        keybd_event(0x11, 0, 0, UIntPtr.Zero);
+        keybd_event(0x57, 0, 0, UIntPtr.Zero);
+        keybd_event(0x57, 0, 2, UIntPtr.Zero);
+        keybd_event(0x11, 0, 2, UIntPtr.Zero);
+        MainForm.Log("closed tab");
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.ExStyle |= 0x80; return cp; }   // WS_EX_TOOLWINDOW: stays out of Alt+Tab
+    }
 }

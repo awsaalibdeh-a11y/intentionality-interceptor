@@ -236,9 +236,22 @@ def judge_request(data, target, reason):
 
 # ---- routes ---------------------------------------------------------------
 
+def _asset_version():
+    """Short hash of the page's script and styles, so a new deploy never runs against cached old files."""
+    import hashlib
+    h = hashlib.sha1()
+    for name in ("app.js", "style.css"):
+        with open(os.path.join(app.static_folder, name), "rb") as f:
+            h.update(f.read())
+    return h.hexdigest()[:10]
+
+
+ASSET_VERSION = _asset_version()
+
+
 @app.get("/")
 def index():
-    return render_template("index.html", ai=bool(_key()))
+    return render_template("index.html", ai=bool(_key()), v=ASSET_VERSION)
 
 
 DOWNLOADS = {

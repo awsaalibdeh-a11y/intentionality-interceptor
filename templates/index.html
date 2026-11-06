@@ -10,7 +10,7 @@
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{ v }}">
 </head>
 <body>
   <main class="wrap">
@@ -68,6 +68,12 @@
       </div>
 
       <textarea id="reason" maxlength="600" rows="3" aria-label="Reason" placeholder="Be specific. A task with a finish line, or an honest break."></textarea>
+      <div class="starters" id="starters" aria-label="Reason starters">
+        <button type="button" data-start="Watch the video called &quot;&quot; for ">Watch a video…</button>
+        <button type="button" data-start="Reply to  about ">Reply to someone…</button>
+        <button type="button" data-start="Look up  for my ">Look something up…</button>
+        <button type="button" data-start="I finished , I want a short break">Earned a break…</button>
+      </div>
 
       <div class="proof">
         <input id="proofUrl" class="text" type="url" maxlength="500" placeholder="Proof link (needed for tasks)" aria-label="Proof link">
@@ -91,6 +97,29 @@
       </div>
       <p class="fine">Tasks without proof get 5 minutes at most. Breaks don't need proof. Every unlock ends with a check-in.</p>
       {% if not ai %}<p class="fine">Demo mode: no AI key on this server, simple rules decide.</p>{% endif %}
+    </section>
+
+    <section class="panel focus-panel" id="focusView">
+      <div class="record-top">
+        <h2>Focus session</h2>
+        <span class="record-sum" id="focusSum"></span>
+      </div>
+      <div id="focusIdle">
+        <p class="sub">Lock everything and earn points for time you stay away. Quitting early just ends it, no penalty.</p>
+        <div class="row focus-pick">
+          <button class="btn-line" data-focus="25" type="button">25 min <small>+5</small></button>
+          <button class="btn-line" data-focus="45" type="button">45 min <small>+10</small></button>
+          <button class="btn-line" data-focus="60" type="button">60 min <small>+15</small></button>
+        </div>
+      </div>
+      <div id="focusRun" class="hidden">
+        <div class="focus-ring">
+          <svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="52" class="track"/><circle cx="60" cy="60" r="52" class="fill" id="focusArc"/></svg>
+          <div class="focus-time" id="focusTime">25:00</div>
+        </div>
+        <p class="sub center" id="focusNote">Everything is locked. Stay with it.</p>
+        <div class="row center"><button class="btn-line" id="focusQuit" type="button">End early</button></div>
+      </div>
     </section>
 
     <section id="verdictView" class="panel hidden" aria-live="polite">
@@ -197,7 +226,8 @@
         <span class="record-sum" id="weekSum"></span>
       </div>
       <div class="bars" id="weekBars"></div>
-      <div class="legend"><span class="key purpose"></span>On purpose <span class="key drift"></span>Drifting</div>
+      <div class="legend"><span class="key purpose"></span>On purpose <span class="key drift"></span>Drifting <span class="key focus"></span>Focus</div>
+      <div class="ratio" id="ratioLine"></div>
     </section>
 
     </div>
@@ -281,6 +311,8 @@
     <footer>Made by Legion · Awsaa-Legion@proton.me</footer>
   </main>
 
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
   <nav class="tabbar" aria-label="Sections">
     <button type="button" class="on" data-go="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg>Home</button>
     <button type="button" data-go="day"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>Day</button>
@@ -324,6 +356,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v={{ v }}"></script>
 </body>
 </html>

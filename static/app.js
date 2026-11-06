@@ -17,6 +17,8 @@ const BLOCKS = "ii-blocks";
 const IGNORE_WHY = "ii-ignore-why";   // an ignore session that ended and still needs its reason
 const BADDAY = "ii-badday";           // {date, until, last}
 const IGNORE_MINUTES = 15, IGNORE_COST = 40, BADDAY_EVERY_DAYS = 7;
+const FOCUS = "ii-focus";             // a running focus session {start, minutes}
+const FOCUS_POINTS = { 25: 5, 45: 10, 60: 15 };
 const DEMO = new URLSearchParams(location.search).has("demo");
 const NATIVE = window.VouchNative || null;
 
@@ -79,7 +81,7 @@ function streak() {
   return n;
 }
 // What the AI sees: real check-ins only, not emergency passes.
-function promises() { return history().filter((e) => !e.emergency && !e.badday); }
+function promises() { return history().filter((e) => !e.emergency && !e.badday && !e.focus); }
 
 function rules() {
   return { limit: 0, focusOn: false, focusFrom: "16:00", focusTo: "20:00", note: "", ...load(RULES, {}) };
@@ -97,7 +99,7 @@ function inFocus(r = rules()) {
 function addDayMinutes(kind, minutes) {
   const d = load(DAYS, {});
   const day = d[today()] || { purpose: 0, drift: 0 };
-  day[kind] += minutes;
+  day[kind] = (day[kind] || 0) + minutes;
   d[today()] = day;
   const keep = Object.keys(d).sort().slice(-30);
   save(DAYS, Object.fromEntries(keep.map((k) => [k, d[k]])));
@@ -146,10 +148,10 @@ function renderRecord() {
   $("recordSum").textContent = h.length ? `Kept ${kept} of ${recent.length}` : "";
   for (const e of h.slice(0, 6)) {
     const li = document.createElement("li");
-    li.className = e.badday ? "bad" : e.ignored ? "broke" : e.emergency ? "sos" : e.kept ? "kept" : "broke";
+    li.className = e.focus ? "kept" : e.badday ? "bad" : e.ignored ? "broke" : e.emergency ? "sos" : e.kept ? "kept" : "broke";
     const top = document.createElement("div");
     top.className = "rec-top";
-    for (const [cls, text] of [["tag", e.badday ? "BAD DAY" : e.ignored ? "IGNORED" : e.emergency ? "EMERGENCY" : e.kept ? "KEPT" : "BROKE"], ["rec-app", `${e.target} · ${e.used}/${e.minutes} min`], ["rec-when", ago(e.at)]]) {
+    for (const [cls, text] of [["tag", e.focus ? "FOCUS" : e.badday ? "BAD DAY" : e.ignored ? "IGNORED" : e.emergency ? "EMERGENCY" : e.kept ? "KEPT" : "BROKE"], ["rec-app", `${e.target} · ${e.used}/${e.minutes} min`], ["rec-when", ago(e.at)]]) {
       top.append(Object.assign(document.createElement("span"), { className: cls, textContent: text }));
     }
     const said = document.createElement("div");
@@ -172,7 +174,7 @@ function renderWeek() {
     const key = dt.toLocaleDateString("en-CA");
     days.push({ key, label: dt.toLocaleDateString("en", { weekday: "narrow" }), ...(d[key] || { purpose: 0, drift: 0 }) });
   }
-  const max = Math.max(30, ...days.map((x) => x.purpose + x.drift));
+  const max = Math.max(30, ...days.map((x) => x.purpose + x.drift + (x.focus || 0)));
   const box = $("weekBars");
   box.textContent = "";
   let purpose = 0, drift = 0;
@@ -187,11 +189,19 @@ function renderWeek() {
     dr.style.height = (x.drift / max) * 100 + "%";
     const pu = Object.assign(document.createElement("div"), { className: "bar purpose" });
     pu.style.height = (x.purpose / max) * 100 + "%";
-    stack.append(dr, pu);
+    const fo = Object.assign(document.createElement("div"), { className: "bar focus" });
+    fo.style.height = ((x.focus || 0) / max) * 100 + "%";
+    stack.append(dr, pu, fo);
     col.append(stack, Object.assign(document.createElement("span"), { textContent: x.label }));
     box.append(col);
   }
   $("weekSum").textContent = `${purpose} min on purpose · ${drift} min drifting`;
+  let focus = 0;
+  for (const x of days) focus += x.focus || 0;
+  const total = purpose + drift;
+  $("ratioLine").textContent = total
+    ? `${Math.round((purpose / total) * 100)}% of your unlocked time was on purpose${focus ? ` · ${focus} min of focus sessions` : ""}`
+    : focus ? `${focus} min of focus sessions this week` : "";
 }
 
 function renderRules() {
@@ -226,6 +236,8 @@ function render() {
 
 function show(view) {
   ["askView", "verdictView", "checkinView"].forEach((id) => $(id).classList.toggle("hidden", id !== view));
+  // Focus sessions belong with asking; a running one stays visible wherever you are.
+  $("focusView").classList.toggle("hidden", view !== "askView" && !load(FOCUS, null));
 }
 
 // ---- cooldown after a broken promise ------------------------------------
@@ -317,7 +329,7 @@ async function ask() {
     const data = await post("/api/check", {
       target, reason,
       usage_minutes: Math.round(u.minutes), sessions: u.sessions, trust: score(),
-      daily_limit: r.limit, focus: inFocus(r), block: nowBlock(),
+      daily_limit: r.limit, focus: inFocus(r) || !!focusRun(), block: nowBlock(),
       proof_url: $("proofUrl").value.trim(), image: proofImage,
       history: promises().slice(0, 5).map((e) => ({ reason: e.reason, report: e.report, kept: e.kept })),
     });
@@ -376,17 +388,24 @@ function startTimer() {
   ["timer", "timerSub", "doneBtn"].forEach((id) => $(id).classList.remove("hidden"));
   $("backBtn").classList.add("hidden");
   $("timerSub").textContent = `${a.target} is unlocked. At zero it locks again and you check in.`;
-  if (!$("verdictWord").textContent) {
-    $("verdictWord").className = "verdict approve";
-    $("verdictWord").textContent = `APPROVED · ${a.minutes} MIN`;
-    $("verdictMsg").textContent = `You said: "${a.reason}"`;
+  if (!$("verdictWord").textContent) {   // resumed after a reload: label it by what kind of unlock it is
+    const kind = a.ignored ? ["deny", "IGNORED", `−${IGNORE_COST} points. When it ends you'll have to say why.`]
+      : a.emergency ? ["approve", "EMERGENCY", "Handle it and close it."]
+      : ["approve", "APPROVED", `You said: "${a.reason}"`];
+    $("verdictWord").className = "verdict " + kind[0];
+    $("verdictWord").textContent = `${kind[1]} · ${a.minutes} MIN`;
+    $("verdictMsg").textContent = kind[2];
   }
   clearInterval(tick);
+  let warned = a.minutes <= 3;
   const step = () => {
     const left = a.start + a.minutes * 60000 - Date.now();
-    if (left <= 0) return endSession(a.minutes);
+    if (left <= 0) { document.title = "Vouch"; return endSession(a.minutes); }
     const s = Math.ceil(left / 1000);
-    $("timer").textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    const clock = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    $("timer").textContent = clock;
+    document.title = `${clock} · ${a.target} · Vouch`;
+    if (!warned && left <= 120000) { warned = true; toast(`2 minutes left on ${a.target}. Start wrapping up.`); }
   };
   step();
   tick = setInterval(step, 1000);
@@ -557,7 +576,7 @@ $("usageSlider").addEventListener("input", (e) => setUsage({ ...usage(), minutes
 $("trustSlider").addEventListener("input", (e) => setScore(Number(e.target.value)));
 $("resetBtn").addEventListener("click", () => {
   clearInterval(tick);
-  [ACTIVE, CHECKIN, HISTORY, DAYS, COOLDOWN, SOS, IGNORE_WHY, BADDAY].forEach((k) => save(k, null));
+  [ACTIVE, CHECKIN, HISTORY, DAYS, COOLDOWN, SOS, IGNORE_WHY, BADDAY, FOCUS].forEach((k) => save(k, null));
   save(TRUST, SCORE_START);
   native("lock");
   setUsage({ date: today(), minutes: 0, sessions: 0 });
@@ -694,7 +713,9 @@ function closeIntro() { $("intro").classList.add("hidden"); save(INTRO, true); }
 $("introNext").addEventListener("click", () => (introAt < INTRO_STEPS.length - 1 ? showIntro(introAt + 1) : closeIntro()));
 $("introSkip").addEventListener("click", closeIntro);
 $("introAgain").addEventListener("click", () => showIntro(0));
-if (!load(INTRO, false) && !DEMO) showIntro(0);
+// Not for people who arrive from a lock card (?app= / ?ignore=): they're mid-task.
+const fromLock = /[?&](app|ignore)=/.test(location.search);
+if (!load(INTRO, false) && !DEMO && !fromLock && !load(ACTIVE, null) && !load(CHECKIN, null) && !load(IGNORE_WHY, null)) showIntro(0);
 
 // ---- your day: schedule blocks ------------------------------------------------
 
@@ -848,12 +869,88 @@ $("badGo").addEventListener("click", async () => {
 const ignoring = new URLSearchParams(location.search).get("ignore");
 if (ignoring) setTimeout(() => startIgnore(ignoring), 300);
 
+// ---- toast ------------------------------------------------------------------
+
+let toastTimer = null;
+function toast(text) {
+  $("toast").textContent = text;
+  $("toast").classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $("toast").classList.remove("on"), 4500);
+}
+
+// ---- reason starters --------------------------------------------------------
+
+$("starters").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const text = b.dataset.start;
+  const ta = $("reason");
+  ta.value = text;
+  ta.focus();
+  const gap = text.indexOf('""') >= 0 ? text.indexOf('""') + 1 : text.indexOf("  ") >= 0 ? text.indexOf("  ") + 1 : text.indexOf(" , ") >= 0 ? text.indexOf(" , ") + 1 : text.length;
+  ta.setSelectionRange(gap, gap);
+});
+
+// ---- focus sessions: lock everything, earn points for staying away -------------
+
+function focusRun() { return load(FOCUS, null); }
+let focusTick = null;
+function renderFocus() {
+  const f = focusRun();
+  $("focusIdle").classList.toggle("hidden", !!f);
+  $("focusRun").classList.toggle("hidden", !f);
+  const done = history().filter((e) => e.focus && new Date(e.at).toLocaleDateString("en-CA") === today()).length;
+  $("focusSum").textContent = done ? `${done} done today` : "";
+  clearInterval(focusTick);
+  if (!f) return;
+  const arc = $("focusArc");
+  const total = f.minutes * 60000;
+  const step = () => {
+    const left = f.start + total - Date.now();
+    if (left <= 0) return finishFocus(true);
+    const s = Math.ceil(left / 1000);
+    $("focusTime").textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    arc.style.strokeDashoffset = String(327 * (1 - left / total));   // full ring at the start, empties as time runs
+    document.title = `Focus ${$("focusTime").textContent} · Vouch`;
+  };
+  step();
+  focusTick = setInterval(step, 1000);
+}
+function finishFocus(completed) {
+  const f = focusRun();
+  clearInterval(focusTick);
+  save(FOCUS, null);
+  document.title = "Vouch";
+  if (!f) return renderFocus();
+  const used = Math.max(1, Math.round(Math.min(f.minutes, (Date.now() - f.start) / 60000)));
+  addDayMinutes("focus", used);
+  if (completed) {
+    const pts = FOCUS_POINTS[f.minutes] || 5;
+    setScore(score() + pts);
+    save(HISTORY, [{ target: "Focus", reason: `${f.minutes}-minute focus session`, minutes: f.minutes, used, report: "Stayed with it", kept: true, focus: true, points: pts, at: Date.now() }, ...history()].slice(0, 30));
+    toast(`Focus session done: +${pts} points.`);
+  } else {
+    toast(`Ended after ${used} min. No points, no penalty.`);
+  }
+  render();
+  renderFocus();
+}
+document.querySelectorAll("[data-focus]").forEach((b) => b.addEventListener("click", () => {
+  if (load(ACTIVE, null)) return toast("Finish the unlocked time first.");
+  save(FOCUS, { start: Date.now(), minutes: Number(b.dataset.focus) });
+  native("lock");
+  renderFocus();
+}));
+$("focusQuit").addEventListener("click", () => { if (confirm("End the focus session early? You won't get the points.")) finishFocus(false); });
+
 if (NATIVE) $("getApps").classList.add("hidden");
 renderSetup();
 renderRules();
 render();
 renderDay();
 renderBadDay();
+renderFocus();
 if (load(IGNORE_WHY, null)) askWhy();
 if (load(ACTIVE, null)) startTimer();
 else if (load(CHECKIN, null)) showCheckin();

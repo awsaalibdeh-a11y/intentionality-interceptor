@@ -403,7 +403,7 @@ class LockCard : Form
         // Buttons ignore clicks for a moment after the card appears, so a click meant for the video can't press one.
         ask.Click += (s, e) => { if (!Armed()) return; Hide(); MainForm.Log("ask " + app); owner.AskFor(app); };
         close.Click += (s, e) => { if (Armed()) CloseTab(); };
-        later.Click += (s, e) => { if (!Armed()) return; Hide(); MainForm.ShowWindow(Target, 6); MainForm.Log("not now"); };   // minimize it
+        later.Click += (s, e) => { if (!Armed()) return; MainForm.Log("later clicked at " + Cursor.Position); Hide(); MainForm.ShowWindow(Target, 6); MainForm.Log("not now"); };   // minimize it
         foreach (var b in new[] { ask, close, later }) b.TabStop = false;
     }
 
@@ -440,6 +440,7 @@ class LockCard : Form
     // Escape means "Not now", everything else is swallowed.
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        MainForm.Log("key " + keyData);
         if (keyData == Keys.Escape) { shownAt = DateTime.MinValue; later.PerformClick(); }
         return true;
     }

@@ -126,7 +126,7 @@ class MainForm : Form
     string unlockedApp = "";
     DateTime unlockedUntil = DateTime.MinValue;
     bool quitting, ready;
-    string pendingApp;
+    string pendingUrl;
 
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
@@ -199,7 +199,7 @@ class MainForm : Form
             c.WebMessageReceived += (o, a) => OnMessage(a.TryGetWebMessageAsString());
             c.NewWindowRequested += (o, a) => { a.Handled = true; Open(a.Uri); };
             c.NavigationStarting += (o, a) => { if (!a.Uri.StartsWith(Program.Url) && !a.Uri.StartsWith("about:")) { a.Cancel = true; Open(a.Uri); } };
-            web.Source = new Uri(Program.Url + (pendingApp != null ? "?app=" + Uri.EscapeDataString(pendingApp) : ""));
+            web.Source = new Uri(pendingUrl ?? Program.Url);
             ready = true;
         };
 
@@ -235,7 +235,7 @@ class MainForm : Form
         int minutes;
         if (string.IsNullOrEmpty(app) || !int.TryParse(Field(json, "minutes"), out minutes) || minutes <= 0) return;
         unlockedApp = app;
-        unlockedUntil = DateTime.Now.AddMinutes(Math.Min(minutes, 120));
+        unlockedUntil = DateTime.Now.AddMinutes(Math.Min(minutes, app == "*" ? 1440 : 120));
         SaveUnlock();
     }
 
@@ -256,7 +256,7 @@ class MainForm : Form
         return json.Substring(i, stop - i).Split('.')[0];
     }
 
-    bool Unlocked(string app) { return string.Equals(app, unlockedApp, StringComparison.OrdinalIgnoreCase) && DateTime.Now < unlockedUntil; }
+    bool Unlocked(string app) { return (string.Equals(app, unlockedApp, StringComparison.OrdinalIgnoreCase) || unlockedApp == "*") && DateTime.Now < unlockedUntil; }   // "*" = bad day
 
     /// <summary>The locked app a window is showing (a browser tab's title or a locked program), or null.</summary>
     static string LockedAppIn(IntPtr h)
@@ -322,8 +322,9 @@ class MainForm : Form
     }
 
     internal void AskFor(string app) { ShowVouch(app); }
+    internal void IgnoreFor(string app) { ShowVouch(app, true); }
 
-    void ShowVouch(string app)
+    void ShowVouch(string app, bool ignore = false)
     {
         ShowInTaskbar = true;
         Show();
@@ -331,8 +332,9 @@ class MainForm : Form
         Activate();
         SetForegroundWindow(Handle);
         if (app == null) return;
-        if (ready && web.CoreWebView2 != null) web.CoreWebView2.Navigate(Program.Url + "?app=" + Uri.EscapeDataString(app));
-        else pendingApp = app;
+        var url = Program.Url + (ignore ? "?ignore=" : "?app=") + Uri.EscapeDataString(app);
+        if (ready && web.CoreWebView2 != null) web.CoreWebView2.Navigate(url);
+        else pendingUrl = url;
     }
 
     void LoadUnlock()
@@ -363,7 +365,7 @@ class LockCard : Form
 {
     readonly MainForm owner;
     readonly Label title = new Label(), sub = new Label(), honest = new Label(), brand = new Label();
-    readonly Button ask = new Button(), close = new Button(), later = new Button();
+    readonly Button ask = new Button(), close = new Button(), later = new Button(), ignore = new Button();
     readonly Panel middle = new Panel();
     public IntPtr Target { get; private set; }
     string app = "";
@@ -394,9 +396,12 @@ class LockCard : Form
         Pill(close, "Close the tab", Color.White, Ink);
         Pill(later, "Not now", Bg, Muted);
         later.FlatAppearance.BorderSize = 0;
+        Pill(ignore, "Ignore (you'll have to say why)", Bg, Muted);
+        ignore.FlatAppearance.BorderSize = 0;
+        ignore.Font = new Font("Segoe UI", 9.5f);
 
         middle.BackColor = Bg;
-        foreach (Control c in new Control[] { brand, title, sub, honest, ask, close, later }) middle.Controls.Add(c);
+        foreach (Control c in new Control[] { brand, title, sub, honest, ask, close, later, ignore }) middle.Controls.Add(c);
         Controls.Add(middle);
         Resize += (s, e) => Layout2();
 
@@ -404,7 +409,8 @@ class LockCard : Form
         ask.Click += (s, e) => { if (!Armed()) return; Hide(); MainForm.Log("ask " + app); owner.AskFor(app); };
         close.Click += (s, e) => { if (Armed()) CloseTab(); };
         later.Click += (s, e) => { if (!Armed()) return; MainForm.Log("later clicked at " + Cursor.Position); Hide(); MainForm.ShowWindow(Target, 6); MainForm.Log("not now"); };   // minimize it
-        foreach (var b in new[] { ask, close, later }) b.TabStop = false;
+        ignore.Click += (s, e) => { if (!Armed()) return; Hide(); MainForm.Log("ignore " + app); owner.IgnoreFor(app); };
+        foreach (var b in new[] { ask, close, later, ignore }) b.TabStop = false;
     }
 
     static void Style(Label l, string text, float size, FontStyle fs, Color c)
@@ -421,8 +427,8 @@ class LockCard : Form
     void Layout2()
     {
         int w = Math.Min(520, ClientSize.Width - 40);
-        middle.Size = new Size(w, 400);
-        middle.Location = new Point((ClientSize.Width - w) / 2, Math.Max(10, (ClientSize.Height - 400) / 2));
+        middle.Size = new Size(w, 440);
+        middle.Location = new Point((ClientSize.Width - w) / 2, Math.Max(10, (ClientSize.Height - 440) / 2));
         brand.SetBounds(0, 0, w, 28);
         title.SetBounds(0, 40, w, 56);
         sub.SetBounds(0, 100, w, 72);
@@ -431,6 +437,7 @@ class LockCard : Form
         ask.Location = new Point(x, 222);
         close.Location = new Point(x, 276);
         later.Location = new Point(x, 330);
+        ignore.Location = new Point(x, 380);
     }
 
     DateTime shownAt;

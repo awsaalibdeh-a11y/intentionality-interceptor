@@ -13,16 +13,20 @@ const COOLDOWN = "ii-cooldown";
 const SOS = "ii-sos";
 const INTRO = "ii-intro";
 const SOS_MINUTES = 3, SOS_COST = 30;
+const BLOCKS = "ii-blocks";
+const IGNORE_WHY = "ii-ignore-why";   // an ignore session that ended and still needs its reason
+const BADDAY = "ii-badday";           // {date, until, last}
+const IGNORE_MINUTES = 15, IGNORE_COST = 40, BADDAY_EVERY_DAYS = 7;
 const DEMO = new URLSearchParams(location.search).has("demo");
 const NATIVE = window.VouchNative || null;
 
 const SCORE_MIN = 300, SCORE_MAX = 850, SCORE_START = 700;
 const TIERS = [
   [800, "Excellent", 1.0],
-  [740, "Very good", 0.9],
-  [670, "Good", 0.75],
-  [580, "Fair", 0.5],
-  [300, "Poor", 0.25],
+  [740, "Very good", 0.95],
+  [670, "Good", 0.85],
+  [580, "Fair", 0.7],
+  [300, "Poor", 0.45],
 ];
 const KEPT_POINTS = 20, BROKE_POINTS = -50, COOLDOWN_MIN = 10;
 
@@ -68,14 +72,14 @@ function history() {
 function streak() {
   let n = 0;
   for (const e of history()) {
-    if (e.emergency) continue;
+    if (e.emergency || e.badday) continue;
     if (!e.kept) break;
     n++;
   }
   return n;
 }
 // What the AI sees: real check-ins only, not emergency passes.
-function promises() { return history().filter((e) => !e.emergency); }
+function promises() { return history().filter((e) => !e.emergency && !e.badday); }
 
 function rules() {
   return { limit: 0, focusOn: false, focusFrom: "16:00", focusTo: "20:00", note: "", ...load(RULES, {}) };
@@ -142,10 +146,10 @@ function renderRecord() {
   $("recordSum").textContent = h.length ? `Kept ${kept} of ${recent.length}` : "";
   for (const e of h.slice(0, 6)) {
     const li = document.createElement("li");
-    li.className = e.emergency ? "sos" : e.kept ? "kept" : "broke";
+    li.className = e.badday ? "bad" : e.ignored ? "broke" : e.emergency ? "sos" : e.kept ? "kept" : "broke";
     const top = document.createElement("div");
     top.className = "rec-top";
-    for (const [cls, text] of [["tag", e.emergency ? "EMERGENCY" : e.kept ? "KEPT" : "BROKE"], ["rec-app", `${e.target} · ${e.used}/${e.minutes} min`], ["rec-when", ago(e.at)]]) {
+    for (const [cls, text] of [["tag", e.badday ? "BAD DAY" : e.ignored ? "IGNORED" : e.emergency ? "EMERGENCY" : e.kept ? "KEPT" : "BROKE"], ["rec-app", `${e.target} · ${e.used}/${e.minutes} min`], ["rec-when", ago(e.at)]]) {
       top.append(Object.assign(document.createElement("span"), { className: cls, textContent: text }));
     }
     const said = document.createElement("div");
@@ -313,7 +317,7 @@ async function ask() {
     const data = await post("/api/check", {
       target, reason,
       usage_minutes: Math.round(u.minutes), sessions: u.sessions, trust: score(),
-      daily_limit: r.limit, focus: inFocus(r),
+      daily_limit: r.limit, focus: inFocus(r), block: nowBlock(),
       proof_url: $("proofUrl").value.trim(), image: proofImage,
       history: promises().slice(0, 5).map((e) => ({ reason: e.reason, report: e.report, kept: e.kept })),
     });
@@ -397,6 +401,10 @@ function endSession(usedMinutes) {
   const used = Math.max(1, Math.round(Math.min(usedMinutes, a.minutes)));
   const u = usage();
   setUsage({ ...u, minutes: u.minutes + used });
+  if (a.ignored) {
+    save(IGNORE_WHY, { target: a.target, minutes: a.minutes, used });
+    return askWhy();
+  }
   if (a.emergency) {
     // Emergency passes skip the check-in; they show in the record so they can't hide.
     save(HISTORY, [{ target: a.target, reason: a.reason, minutes: a.minutes, used, report: "", kept: true, emergency: true, at: Date.now() }, ...history()].slice(0, 30));
@@ -426,17 +434,51 @@ function lockFor(minutes) {
   renderCooldown();
 }
 
-function checkinResult(kept, message, report, lockMinutes) {
-  const c = load(CHECKIN, null);
-  if (c) {
-    save(HISTORY, [{ ...c, report, kept, message, at: Date.now() }, ...history()].slice(0, 30));
+// Points depend on how it went, not just kept/broke: stopping early, proof and streaks earn more;
+// an honest slip costs less than drifting, and evasion costs the most (the AI's lockout length says how bad it was).
+function pointsFor(kept, c, lock, skipped) {
+  const parts = [];
+  if (kept) {
+    parts.push(["Kept your word", 15]);
+    const unused = (c.minutes || 0) - (c.used || 0);
+    if (c.minutes && c.used < c.minutes * 0.8) parts.push(["Stopped early", Math.min(10, Math.max(2, Math.round(unused / 2)))]);
+    if (c.proven) parts.push(["Proven task", 5]);
+    const st = streak();
+    if (st > 0) parts.push([`Streak of ${st}`, Math.min(10, st * 2)]);
+  } else if (skipped) {
+    parts.push(["Skipped the check-in", -60]);
+  } else if (lock <= 15) {
+    parts.push(["Honest small slip", -25]);
+  } else if (lock <= 30) {
+    parts.push(["Drifted", -40]);
+  } else if (lock <= 60) {
+    parts.push(["Vague or evasive", -55]);
+  } else {
+    parts.push(["Tried to game it", -70]);
+  }
+  return parts;
+}
+
+function checkinResult(kept, message, report, lockMinutes, skipped) {
+  const c = load(CHECKIN, null) || {};
+  const lock = kept ? 0 : lockMinutes || COOLDOWN_MIN;
+  const parts = pointsFor(kept, c, lock, skipped);
+  const delta = parts.reduce((t, [, n]) => t + n, 0);
+  if (c.target) {
+    save(HISTORY, [{ ...c, report, kept, message, points: delta, at: Date.now() }, ...history()].slice(0, 30));
     addDayMinutes(kept ? "purpose" : "drift", c.used);
   }
-  const lock = kept ? 0 : lockMinutes || COOLDOWN_MIN;
   if (lock) lockFor(lock);
   const before = score();
-  setScore(before + (kept ? KEPT_POINTS : BROKE_POINTS));
+  setScore(before + delta);
   const after = score();
+  $("pointsList").textContent = "";
+  for (const [label, n] of parts) {
+    const li = document.createElement("li");
+    li.append(Object.assign(document.createElement("span"), { textContent: label }),
+      Object.assign(document.createElement("b"), { textContent: (n > 0 ? "+" : "") + n, className: n < 0 ? "neg" : "" }));
+    $("pointsList").append(li);
+  }
   save(CHECKIN, null);
   $("checkinAsk").classList.add("hidden");
   $("checkinResult").classList.remove("hidden");
@@ -467,7 +509,7 @@ $("reportBtn").addEventListener("click", async () => {
   }
 });
 $("skipBtn").addEventListener("click", () => {
-  if (load(CHECKIN, null)) checkinResult(false, "Skipping the check-in is a way of not looking. That counts as broken.", "", 45);
+  if (load(CHECKIN, null)) checkinResult(false, "Skipping the check-in is a way of not looking. That counts as broken.", "", 45, true);
 });
 
 function resetAsk() {
@@ -515,7 +557,7 @@ $("usageSlider").addEventListener("input", (e) => setUsage({ ...usage(), minutes
 $("trustSlider").addEventListener("input", (e) => setScore(Number(e.target.value)));
 $("resetBtn").addEventListener("click", () => {
   clearInterval(tick);
-  [ACTIVE, CHECKIN, HISTORY, DAYS, COOLDOWN, SOS].forEach((k) => save(k, null));
+  [ACTIVE, CHECKIN, HISTORY, DAYS, COOLDOWN, SOS, IGNORE_WHY, BADDAY].forEach((k) => save(k, null));
   save(TRUST, SCORE_START);
   native("lock");
   setUsage({ date: today(), minutes: 0, sessions: 0 });
@@ -654,9 +696,164 @@ $("introSkip").addEventListener("click", closeIntro);
 $("introAgain").addEventListener("click", () => showIntro(0));
 if (!load(INTRO, false) && !DEMO) showIntro(0);
 
+// ---- your day: schedule blocks ------------------------------------------------
+
+function blocks() {
+  const b = load(BLOCKS, []);
+  return Array.isArray(b) ? b : [];
+}
+function mins(t) { const [h, m] = String(t).split(":").map(Number); return h * 60 + (m || 0); }
+function blockAt(date = new Date()) {
+  const now = date.getHours() * 60 + date.getMinutes();
+  return blocks().find((b) => {
+    const f = mins(b.from), t = mins(b.to);
+    return f <= t ? now >= f && now < t : now >= f || now < t;
+  }) || null;
+}
+function nowBlock() {
+  const b = blockAt();
+  return b ? { label: b.label, kind: b.kind } : null;
+}
+function nextBlock() {
+  const now = new Date().getHours() * 60 + new Date().getMinutes();
+  return blocks().filter((b) => mins(b.from) > now).sort((a, b) => mins(a.from) - mins(b.from))[0] || null;
+}
+const KIND_TEXT = { focus: "focus", free: "free time", other: "" };
+function renderDay() {
+  const list = $("blockList");
+  list.textContent = "";
+  const all = blocks().slice().sort((a, b) => mins(a.from) - mins(b.from));
+  $("blocksEmpty").classList.toggle("hidden", all.length > 0);
+  const cur = blockAt();
+  all.forEach((b) => {
+    const li = document.createElement("li");
+    li.className = "block " + b.kind + (b === cur || (cur && b.from === cur.from && b.label === cur.label) ? " current" : "");
+    li.append(
+      Object.assign(document.createElement("span"), { className: "b-time", textContent: `${b.from}–${b.to}` }),
+      Object.assign(document.createElement("span"), { className: "b-label", textContent: b.label }),
+      Object.assign(document.createElement("span"), { className: "b-kind", textContent: b.kind }));
+    const del = Object.assign(document.createElement("button"), { className: "b-del", type: "button", textContent: "×", title: "Remove" });
+    del.addEventListener("click", () => { save(BLOCKS, blocks().filter((x) => !(x.from === b.from && x.to === b.to && x.label === b.label))); renderDay(); });
+    li.append(del);
+    list.append(li);
+  });
+  const focusMin = all.filter((b) => b.kind === "focus" && !/sleep/i.test(b.label)).reduce((t, b) => t + ((mins(b.to) - mins(b.from) + 1440) % 1440), 0);
+  $("daySum").textContent = all.length ? `${Math.round(focusMin / 6) / 10} h of focus planned` : "";
+  // the "now" strip on Home
+  const nb = nextBlock();
+  $("nowCard").classList.toggle("hidden", !cur && !nb);
+  $("nowDot").className = "now-dot " + (cur ? cur.kind : "idle");
+  $("nowLabel").textContent = cur ? cur.label : "Nothing planned now";
+  $("nowWhen").textContent = cur ? `· ${KIND_TEXT[cur.kind] ? KIND_TEXT[cur.kind] + " · " : ""}until ${cur.to}` : "";
+  $("nowNext").textContent = nb ? `Next: ${nb.label} at ${nb.from}` : "";
+}
+$("bAdd").addEventListener("click", () => {
+  const b = { from: $("bFrom").value, to: $("bTo").value, label: $("bLabel").value.trim(), kind: $("bKind").value };
+  if (!b.from || !b.to || !b.label) return;
+  save(BLOCKS, [...blocks(), b].slice(0, 24));
+  $("bLabel").value = "";
+  renderDay();
+});
+const TEMPLATES = {
+  school: [["07:30", "14:30", "School", "other"], ["15:00", "16:00", "Free time", "free"], ["16:00", "18:00", "Homework", "focus"], ["18:00", "19:30", "Free time", "free"], ["20:00", "21:00", "Study", "focus"], ["22:30", "07:00", "Sleep", "focus"]],
+  weekend: [["10:00", "12:00", "Projects", "focus"], ["12:00", "18:00", "Free time", "free"], ["23:30", "08:30", "Sleep", "focus"]],
+  exam: [["08:00", "12:00", "Revision", "focus"], ["12:00", "13:00", "Lunch break", "free"], ["13:00", "17:00", "Past papers", "focus"], ["17:00", "18:30", "Free time", "free"], ["19:00", "21:00", "Flashcards", "focus"], ["22:00", "06:30", "Sleep", "focus"]],
+};
+document.querySelectorAll("[data-template]").forEach((btn) => btn.addEventListener("click", () => {
+  save(BLOCKS, TEMPLATES[btn.dataset.template].map(([from, to, label, kind]) => ({ from, to, label, kind })));
+  renderDay();
+}));
+$("bClear").addEventListener("click", () => { save(BLOCKS, []); renderDay(); });
+$("nowCard").addEventListener("click", () => goTab("day"));
+setInterval(renderDay, 60000);
+
+// ---- ignore: open anyway, but the reason is required afterwards ---------------
+
+function startIgnore(app) {
+  if (!app) return ($("error").textContent = "Pick the app first.");
+  if (!confirm(`Open ${app} for ${IGNORE_MINUTES} minutes without asking? It costs ${IGNORE_COST} points, shows in your record, and afterwards you must say why. That part can't be skipped.`)) return;
+  setScore(score() - IGNORE_COST);
+  const u = usage();
+  setUsage({ ...u, sessions: u.sessions + 1 });
+  save(ACTIVE, { target: app, reason: "Ignored Vouch", start: Date.now(), minutes: IGNORE_MINUTES, ignored: true });
+  native("unlock", app, IGNORE_MINUTES);
+  show("verdictView");
+  $("verdictWord").className = "verdict deny";
+  $("verdictWord").textContent = `IGNORED · ${IGNORE_MINUTES} MIN`;
+  $("verdictMsg").textContent = `−${IGNORE_COST} points. When it ends you'll have to say why.`;
+  startTimer();
+}
+$("ignoreBtn").addEventListener("click", () => { $("error").textContent = ""; startIgnore(target); });
+
+function askWhy() {
+  const w = load(IGNORE_WHY, null);
+  if (!w) return;
+  $("whyIntro").textContent = `You opened ${w.target} for ${w.used} min without asking. What was really going on?`;
+  $("whyModal").classList.remove("hidden");
+  $("whyText").focus();
+}
+$("whySend").addEventListener("click", () => {
+  const w = load(IGNORE_WHY, null);
+  const why = $("whyText").value.trim();
+  if (why.length < 10) return ($("whyError").textContent = "Give a real answer, at least a sentence.");
+  if (w) {
+    save(HISTORY, [{ target: w.target, reason: "Ignored Vouch", minutes: w.minutes, used: w.used, report: why, kept: false, ignored: true, points: -IGNORE_COST, at: Date.now() }, ...history()].slice(0, 30));
+    addDayMinutes("drift", w.used);
+  }
+  save(IGNORE_WHY, null);
+  $("whyText").value = "";
+  $("whyError").textContent = "";
+  $("whyModal").classList.add("hidden");
+  render();
+  resetAsk();
+});
+// No way out of the "why" box: no close button, Escape does nothing, and it comes back after a reload.
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("whyModal").classList.contains("hidden")) e.preventDefault(); }, true);
+
+// ---- bad day: everything open until midnight, no points, once a week ------------
+
+function badDay() { return load(BADDAY, {}) || {}; }
+function badDayActive() { const b = badDay(); return b.until && Date.now() < b.until; }
+function renderBadDay() {
+  const on = badDayActive();
+  $("badBanner").classList.toggle("hidden", !on);
+  if (on) $("badMsg").textContent = badDay().message || "";
+}
+$("badBtn").addEventListener("click", () => {
+  $("badError").textContent = "";
+  const last = badDay().last || 0;
+  const wait = Math.ceil((last + BADDAY_EVERY_DAYS * 86400000 - Date.now()) / 86400000);
+  if (badDayActive()) return ($("error").textContent = "Bad day mode is already on.");
+  if (wait > 0) return ($("error").textContent = `Bad day mode is once a week. Next one in ${wait} day${wait === 1 ? "" : "s"}.`);
+  $("badModal").classList.remove("hidden");
+});
+$("badCancel").addEventListener("click", () => $("badModal").classList.add("hidden"));
+$("badGo").addEventListener("click", async () => {
+  const midnight = new Date(); midnight.setHours(24, 0, 0, 0);
+  const feeling = $("badFeeling").value.trim();
+  $("badGo").disabled = true;
+  let message = "";
+  try { message = (await post("/api/badday", { feeling })).message; } catch { message = "Some days are heavy. Be kind to yourself."; }
+  $("badGo").disabled = false;
+  save(BADDAY, { last: Date.now(), until: midnight.getTime(), message });
+  save(HISTORY, [{ target: "Everything", reason: feeling || "Bad day", minutes: 0, used: 0, report: "", kept: true, badday: true, at: Date.now() }, ...history()].slice(0, 30));
+  native("unlock", "*", Math.ceil((midnight - Date.now()) / 60000));
+  $("badModal").classList.add("hidden");
+  $("badFeeling").value = "";
+  render();
+  renderBadDay();
+});
+
+// Native lock cards send people here as /?ignore=TikTok
+const ignoring = new URLSearchParams(location.search).get("ignore");
+if (ignoring) setTimeout(() => startIgnore(ignoring), 300);
+
 if (NATIVE) $("getApps").classList.add("hidden");
 renderSetup();
 renderRules();
 render();
+renderDay();
+renderBadDay();
+if (load(IGNORE_WHY, null)) askWhy();
 if (load(ACTIVE, null)) startTimer();
 else if (load(CHECKIN, null)) showCheckin();

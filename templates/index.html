@@ -36,6 +36,16 @@
       <div class="score-next" id="scoreNext"></div>
     </section>
 
+    <div class="bad-banner hidden" id="badBanner">
+      <b>Bad day mode</b> · everything is open until midnight. <span id="badMsg"></span>
+    </div>
+
+    <button class="now hidden" id="nowCard" type="button">
+      <span class="now-dot" id="nowDot"></span>
+      <span class="now-text"><b id="nowLabel"></b> <span id="nowWhen"></span></span>
+      <span class="now-next" id="nowNext"></span>
+    </button>
+
     <section class="panel setup hidden" id="setupView">
       <h2>Set up the lock</h2>
       <p class="sub">Three switches so Vouch can actually stop you. You can turn them off any time in Settings.</p>
@@ -74,7 +84,11 @@
       <div class="cooldown hidden" id="cooldown">Locked by the AI · opens in <b id="cooldownLeft">0:00</b></div>
       <button class="btn" id="goBtn" type="button">Ask</button>
       <div class="error" id="error" role="alert"></div>
-      <button class="link sos" id="sosBtn" type="button">Real emergency? 3-minute pass</button>
+      <div class="alt-row">
+        <button class="link" id="sosBtn" type="button">Emergency pass</button>
+        <button class="link" id="ignoreBtn" type="button">Ignore Vouch</button>
+        <button class="link" id="badBtn" type="button">Bad day?</button>
+      </div>
       <p class="fine">Tasks without proof get 5 minutes at most. Breaks don't need proof. Every unlock ends with a check-in.</p>
       {% if not ai %}<p class="fine">Demo mode: no AI key on this server, simple rules decide.</p>{% endif %}
     </section>
@@ -115,11 +129,38 @@
         <div class="verdict" id="checkinWord"></div>
         <p class="verdict-msg" id="checkinMsg"></p>
         <p class="score-change" id="trustChange"></p>
+        <ul class="points mini" id="pointsList"></ul>
         <p class="uninstall hidden" id="uninstallMsg">If you keep lying to yourself, uninstall the app. It can't help someone who won't be honest with it.</p>
         <button class="btn" id="newBtn" type="button">Done</button>
       </div>
     </section>
 
+    </div>
+
+    <div class="tab hidden" data-tab="day">
+    <section class="panel">
+      <div class="record-top"><h2>Your day</h2><span class="record-sum" id="daySum"></span></div>
+      <p class="sub">Plan what you're doing. In a <b>focus</b> block only proven tasks get through; in a <b>free</b> block breaks are 1.5× longer.</p>
+      <ol class="blocks" id="blockList"></ol>
+      <p class="sub hidden" id="blocksEmpty">No plan yet. Add a block, or start from a template.</p>
+      <div class="block-form">
+        <input type="time" id="bFrom" value="16:00" aria-label="From">
+        <input type="time" id="bTo" value="18:00" aria-label="To">
+        <input class="text" id="bLabel" maxlength="40" placeholder="What (e.g. Homework)" aria-label="What">
+        <select id="bKind" aria-label="Kind">
+          <option value="focus">Focus</option>
+          <option value="free">Free</option>
+          <option value="other">Other</option>
+        </select>
+        <button class="btn" id="bAdd" type="button">Add</button>
+      </div>
+      <div class="row templates">
+        <button class="btn-line small" data-template="school" type="button">School day</button>
+        <button class="btn-line small" data-template="weekend" type="button">Weekend</button>
+        <button class="btn-line small" data-template="exam" type="button">Exam week</button>
+        <button class="link" id="bClear" type="button">Clear</button>
+      </div>
+    </section>
     </div>
 
     <div class="tab hidden" data-tab="record">
@@ -190,12 +231,25 @@
       <h2>How the score works</h2>
       <ul class="tier-list">
         <li><span>800+</span><span>Excellent</span><span>100% of time</span></li>
-        <li><span>740</span><span>Very good</span><span>90%</span></li>
-        <li><span>670</span><span>Good</span><span>75%</span></li>
-        <li><span>580</span><span>Fair</span><span>50%</span></li>
-        <li><span>300</span><span>Poor</span><span>25%, tasks need proof</span></li>
+        <li><span>740</span><span>Very good</span><span>95%</span></li>
+        <li><span>670</span><span>Good</span><span>85%</span></li>
+        <li><span>580</span><span>Fair</span><span>70%</span></li>
+        <li><span>300</span><span>Poor</span><span>45%, tasks need proof</span></li>
       </ul>
-      <p class="fine">Kept your word: +20. Broke it or skipped the check-in: −50, and the AI locks everything for 5 minutes to 2 hours depending on how it went. Honesty gets a shorter lock. Everyone starts at 700.</p>
+      <ul class="points">
+        <li><span>Kept your word</span><b>+15</b></li>
+        <li><span>Stopped early</span><b>up to +10</b></li>
+        <li><span>Proven task</span><b>+5</b></li>
+        <li><span>Streak</span><b>+2 each, up to +10</b></li>
+        <li><span>Honest small slip</span><b class="neg">−25</b></li>
+        <li><span>Drifted</span><b class="neg">−40</b></li>
+        <li><span>Vague or evasive</span><b class="neg">−55 to −70</b></li>
+        <li><span>Skipped check-in</span><b class="neg">−60</b></li>
+        <li><span>Ignored Vouch</span><b class="neg">−40</b></li>
+        <li><span>Emergency pass</span><b class="neg">−30</b></li>
+        <li><span>Bad day</span><b>0</b></li>
+      </ul>
+      <p class="fine">After a broken promise the AI locks everything for 5 minutes to 2 hours. Honesty gets a shorter lock. Everyone starts at 700.</p>
     </section>
 
     <section class="panel get" id="getApps">
@@ -229,9 +283,35 @@
 
   <nav class="tabbar" aria-label="Sections">
     <button type="button" class="on" data-go="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg>Home</button>
+    <button type="button" data-go="day"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>Day</button>
     <button type="button" data-go="record"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg>Record</button>
     <button type="button" data-go="rules"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Rules</button>
   </nav>
+
+  <div class="intro hidden" id="whyModal" role="dialog" aria-modal="true" aria-labelledby="whyTitle">
+    <div class="intro-card">
+      <div class="intro-step">Required</div>
+      <h1 id="whyTitle">Why did you ignore Vouch?</h1>
+      <p id="whyIntro"></p>
+      <textarea id="whyText" rows="3" maxlength="400" placeholder="The honest reason. This can't be skipped."></textarea>
+      <div class="error" id="whyError" role="alert"></div>
+      <div class="row"><button class="btn" id="whySend" type="button">Save</button></div>
+    </div>
+  </div>
+
+  <div class="intro hidden" id="badModal" role="dialog" aria-modal="true" aria-labelledby="badTitle">
+    <div class="intro-card">
+      <div class="intro-step">Once a week</div>
+      <h1 id="badTitle">Having a bad day?</h1>
+      <p>Everything unlocks until midnight. No points lost, no check-ins. Use it when today is genuinely rough, not to dodge a plan.</p>
+      <textarea id="badFeeling" rows="2" maxlength="300" placeholder="How are you feeling? (optional)"></textarea>
+      <div class="error" id="badError" role="alert"></div>
+      <div class="row">
+        <button class="btn" id="badGo" type="button">Go all in</button>
+        <button class="link" id="badCancel" type="button">Never mind</button>
+      </div>
+    </div>
+  </div>
 
   <div class="intro hidden" id="intro" role="dialog" aria-modal="true" aria-labelledby="introTitle">
     <div class="intro-card">

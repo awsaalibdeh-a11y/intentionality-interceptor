@@ -50,7 +50,7 @@ CATEGORIES = {"MANIPULATION", "TASK", "BREAK", "VAGUE"}
 PROOFS = {"VERIFIED", "MISMATCHED", "NONE"}
 SAFE_DENY = "The gatekeeper couldn't judge that clearly, so the lock stays on. Try again with a specific task."
 LOW_TRUST = 580
-UNVERIFIED_MAX = 5
+UNVERIFIED_MAX = 10
 
 
 def build_judge_message(target, reason, proof=None, history=None):
@@ -100,8 +100,11 @@ def _lock(value):
         return 15
 
 
-def decide(j, usage, trust=None, daily_limit=0, focus=False):
+def decide(j, usage, trust=None, daily_limit=0, focus=False, block=None):
     """Apply Vouch's rules to a judgment.
+
+    block is the user's schedule block for right now, e.g. {"label": "Homework", "kind": "focus"};
+    a focus block works like focus hours, a free block makes breaks roomier.
 
     Returns (granted, minutes, message): granted is what the rules allow before
     the trust cut, minutes is what the user actually gets (0 = deny).
@@ -109,6 +112,12 @@ def decide(j, usage, trust=None, daily_limit=0, focus=False):
     if j is None:
         return 0, 0, SAFE_DENY
     note = j["note"]
+    block = block or {}
+    label = str(block.get("label") or "").strip()[:40]
+    if block.get("kind") == "focus":
+        focus = True
+    free = block.get("kind") == "free"
+    focus_why = f'Your schedule says "{label}" right now' if label and block.get("kind") == "focus" else "It's your focus time"
     over_limit = bool(daily_limit) and usage >= daily_limit
     low_trust = trust is not None and trust < LOW_TRUST
 
@@ -123,30 +132,35 @@ def decide(j, usage, trust=None, daily_limit=0, focus=False):
             return deny(note or "Your proof shows something different from what you said you'd do.")
         need = j["task_minutes"] or 10
         if j["proof"] == "VERIFIED":
-            granted = need if usage >= 90 else need + max(2, math.ceil(need * 0.25))
+            # Generous: a proven task gets half again its length (at least 5 more minutes), less when usage is high.
+            granted = need + (max(3, math.ceil(need * 0.25)) if usage >= 90 else max(5, math.ceil(need * 0.5)))
         else:
             if focus:
-                return deny("It's your focus time, so only proven tasks get through. Add the exact link or a screenshot.")
+                return deny(f"{focus_why}, so only proven tasks get through. Add the exact link or a screenshot.")
             if low_trust or j["repeat_broken"]:
                 reason = note if j["repeat_broken"] and note else "Your score is low, so a task needs proof now."
                 return deny(f"{reason} Add the exact link or a screenshot.")
             if over_limit:
                 return deny(f"You're past the {daily_limit}-minute limit you set, so a task needs proof now.")
             granted = min(UNVERIFIED_MAX, need)
-            note = "Short, because it is on your word only. Add the exact link or a screenshot to unlock the full time."
+            note = "On your word only, so it's short. Add the exact link or a screenshot to unlock the full time."
     else:  # BREAK
         if focus:
-            return deny("It's your focus time, and you set it yourself. Breaks wait until it ends.")
+            return deny(f"{focus_why}, and you planned it yourself. Breaks wait until it ends.")
         if over_limit:
             return deny(f"You set a {daily_limit}-minute daily limit and you're at {int(usage)}. An offline break will rest you more.")
         if usage < 30:
-            granted = 30 if j["earned"] else 20
+            granted = 40 if j["earned"] else 25
         elif usage < 90:
-            granted = 15 if j["earned"] else 10
+            granted = 25 if j["earned"] else 15
         elif usage < 180:
-            granted = 5
+            granted = 10
         else:
             return deny(f"You've spent {int(usage)} minutes on these apps today. Step away: a walk or water will rest you more.")
+        if free:
+            granted = math.ceil(granted * 1.5)   # it's free time on their own schedule
+            if label:
+                note = note or f'Enjoy it, it\'s "{label}" on your schedule.'
         if j["repeat_broken"]:
             granted = max(5, granted // 2)
 

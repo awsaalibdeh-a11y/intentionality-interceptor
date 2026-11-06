@@ -7,6 +7,7 @@ Without OPENAI_API_KEY it falls back to simple demo rules so the site still work
 """
 
 import ipaddress
+import json
 import os
 import re
 import socket
@@ -22,6 +23,7 @@ from flask import Flask, jsonify, redirect, render_template, request
 from judge import CLAUDE_JUDGE_PROMPT, build_judge_message, decide, parse_judgment, verdict_text
 from prompts import (
     CLAUDE_CHECKIN_PROMPT,
+    CLAUDE_REVIEW_PROMPT,
     SCORE_MAX,
     SCORE_MIN,
     SCORE_START,
@@ -291,6 +293,43 @@ def checkin():
         reply = "KEPT: Your report matches what you planned." if kept else "BROKE 30: Your report doesn't match what you said you'd do."
     kept, message, lock = parse_checkin_verdict(reply)
     return jsonify(kept=kept, message=message, lock_minutes=lock)
+
+
+@app.post("/api/review")
+def review():
+    """Coach-style read of the user's recent check-ins: a pattern, what works, one thing to try."""
+    data = request.get_json(silent=True) or {}
+    items = data.get("history") if isinstance(data.get("history"), list) else []
+    lines = []
+    for h in items[:20]:
+        if not isinstance(h, dict):
+            continue
+        lines.append(
+            f'- {str(h.get("day", ""))[:3]} {_int(h.get("hour"), 0, 23, 0):02d}:00 {str(h.get("target", ""))[:30]}: '
+            f'claimed "{str(h.get("reason", ""))[:150]}" -> reported "{str(h.get("report", "") or "(skipped)")[:150]}" '
+            f'-> {"KEPT" if h.get("kept") else "BROKE"}, {_int(h.get("used"), 0, 600, 0)} min'
+        )
+    if len(lines) < 3:
+        return jsonify(error="Vouch needs at least 3 check-ins to see a pattern."), 400
+    if not _key():
+        kept = sum(1 for l in lines if l.endswith("min") and "-> KEPT" in l)
+        return jsonify(pattern=f"You kept {kept} of your last {len(lines)} promises.",
+                       working="Every check-in you finish makes the pattern clearer.",
+                       try_this="Keep checking in honestly; the AI review needs the server's AI key.")
+    if not _allowed(_client_ip()):
+        return jsonify(error="Too many requests for now. Try again later."), 429
+    try:
+        score = _int(data.get("score"), SCORE_MIN, SCORE_MAX, SCORE_START)
+        reply = ask_model(CLAUDE_REVIEW_PROMPT, f"SCORE: {score}\nCHECK-INS (newest first):\n" + "\n".join(lines),
+                          as_json=True, max_tokens=220)
+        j = json.loads(reply[reply.index("{"):reply.rindex("}") + 1])
+        out = {k: str(j.get(k) or "").strip()[:300] for k in ("pattern", "working", "try_this")}
+        if not all(out.values()):
+            raise ValueError("incomplete review")
+        return jsonify(**out)
+    except Exception as exc:
+        app.logger.warning("review failed: %s", type(exc).__name__)
+        return jsonify(error="Vouch couldn't put a review together right now. Try again."), 502
 
 
 def _plain(text, status=200):

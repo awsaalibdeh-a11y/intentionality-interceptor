@@ -369,6 +369,7 @@ class IntentGatekeeper:
         self.negotiator_url = negotiator_url
         self._neg_state: dict = {}      # app -> session token from the last reply
         self._neg_day = ""
+        self._neg_record = self._load_record()   # signed honesty record (trust, owed debriefs)
         self._neg_attempts: dict = {}   # app -> conversations started today
         self._neg_denials = 0
 
@@ -457,6 +458,31 @@ class IntentGatekeeper:
 
     # -- Negotiator (multi-turn) ------------------------------------------- #
 
+    @staticmethod
+    def _record_path() -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "negotiator_record.json")
+
+    def _load_record(self):
+        try:
+            with open(self._record_path(), encoding="utf-8") as f:
+                import json as _json
+
+                return _json.load(f).get("record")
+        except Exception:
+            return None
+
+    def _save_record(self, record) -> None:
+        if not record or record == self._neg_record:
+            return
+        self._neg_record = record
+        try:
+            import json as _json
+
+            with open(self._record_path(), "w", encoding="utf-8") as f:
+                _json.dump({"record": record}, f)
+        except OSError:
+            pass
+
     def _roll_day(self) -> None:
         today = time.strftime("%Y-%m-%d")
         if self._neg_day != today:
@@ -494,7 +520,8 @@ class IntentGatekeeper:
         import negotiator
 
         reply = negotiator.negotiate(payload["app"], payload["message"],
-                                     payload.get("state"), payload.get("context"))
+                                     payload.get("state"), payload.get("context"),
+                                     record=payload.get("record"))
         if reply["decision"] == "APPROVE":
             ok, why = negotiator.verify_trigger(reply["trigger"])
             if not ok:
@@ -513,9 +540,11 @@ class IntentGatekeeper:
                 "attempts_today": self._neg_attempts.get(app, 1),
                 "denials_today": self._neg_denials,
             },
+            "record": self._neg_record,
         }
         try:
             reply = self._negotiate(payload)
+            self._save_record(reply.get("record"))
             decision = str(reply.get("decision", "")).upper()
             said = str(reply.get("message") or "").strip()
             if decision == "CLARIFY":

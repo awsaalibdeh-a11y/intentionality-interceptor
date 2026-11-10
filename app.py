@@ -20,6 +20,7 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request
 
+import honesty
 import negotiator
 from judge import CLAUDE_JUDGE_PROMPT, build_judge_message, decide, parse_judgment, verdict_text
 from prompts import (
@@ -420,6 +421,7 @@ def approve():
 def negotiator_page():
     return render_template("negotiator.html", ai=bool(_key()), v=_negotiator_version(),
                            model=negotiator.model_name(), prompt=negotiator.NEGOTIATOR_SYSTEM_PROMPT,
+                           debrief_prompt=honesty.DEBRIEF_SYSTEM_PROMPT,
                            limits={"clarify": negotiator.MAX_CLARIFY, "minutes": negotiator.MAX_MINUTES})
 
 
@@ -437,7 +439,8 @@ def negotiate_api():
     """One step of the Negotiator conversation.
 
     Body: {"app", "message" ("" opens a session), "state" (token from the last reply),
-           "context": {"local_time": "HH:MM", "attempts_today": n, "denials_today": n}}
+           "context": {"local_time": "HH:MM", "attempts_today": n, "denials_today": n, "ended": [sid]},
+           "record" (signed honesty record from the last reply)}
     """
     data = request.get_json(silent=True) or {}
     message = str(data.get("message") or "")
@@ -445,7 +448,8 @@ def negotiate_api():
     if message.strip() and _key() and not _allowed(_client_ip()):
         return jsonify(error="Too many requests for now. Take that as a sign and try again later."), 429
     try:
-        reply = negotiator.negotiate(data.get("app"), message, data.get("state"), data.get("context"))
+        reply = negotiator.negotiate(data.get("app"), message, data.get("state"), data.get("context"),
+                                     record=data.get("record"))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     if reply["source"] == "rules" and _key():

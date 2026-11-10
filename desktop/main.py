@@ -66,7 +66,14 @@ CONFIG = {
     # Where the gatekeeper decision comes from:
     #   "openai" -> call OpenAI directly from this desktop app
     #   "http"   -> call Claude's Vercel endpoint (keeps the API key off-device)
-    "gatekeeper_mode": "http",
+    #   "negotiator" -> multi-turn Negotiator: it asks why, may ask up to two
+    #                   follow-up questions, then approves (signed JSON trigger)
+    #                   or denies. See ../negotiator.py.
+    "gatekeeper_mode": "negotiator",
+    # Negotiator endpoint, e.g. "https://<host>/api/negotiate". Leave empty to
+    # run the Negotiator engine in this process (needs OPENAI_API_KEY in the
+    # environment or in the project's .env; without a key it uses local rules).
+    "negotiator_url": "",
     # Vercel function URL, used when gatekeeper_mode == "http".
     # Contract: POST JSON {"app","reason","minutes_today"} ->
     #           {"reply": "APPROVE: 15"}  or  {"reply": "DENY"}
@@ -150,6 +157,7 @@ class BlockedEvent:
 class GateResult:
     verdict: Verdict   # approved / minutes / reason (gatekeeper_prompt)
     raw: str           # the user message that was sent, for audit + logging
+    kind: str = "verdict"   # "clarify" when the Negotiator asked a follow-up question
 
 
 # --------------------------------------------------------------------------- #
@@ -348,7 +356,8 @@ class IntentGatekeeper:
 
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini",
                  timeout: float = 20.0, mode: str = "openai",
-                 endpoint: str = "", token: str = "") -> None:
+                 endpoint: str = "", token: str = "",
+                 negotiator_url: str = "") -> None:
         self.model = model
         self.timeout = timeout
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -356,6 +365,12 @@ class IntentGatekeeper:
         self.endpoint = endpoint
         self.token = token
         self._client = None
+        # Negotiator mode: one signed conversation per blocked app.
+        self.negotiator_url = negotiator_url
+        self._neg_state: dict = {}      # app -> session token from the last reply
+        self._neg_day = ""
+        self._neg_attempts: dict = {}   # app -> conversations started today
+        self._neg_denials = 0
 
     def _get_client(self):
         if self._client is None:
@@ -375,6 +390,8 @@ class IntentGatekeeper:
         way the reply is parsed *locally* by ``parse_verdict`` -- a remote
         service can never hand us a pre-approved object.
         """
+        if self.mode == "negotiator":
+            return self._ask_negotiator(app, reason)
         message = build_user_message(app, reason, minutes_today)
         if self.mode == "http":
             return self._ask_http(app, reason, minutes_today, message)
@@ -437,6 +454,86 @@ class IntentGatekeeper:
                 Verdict(False, 0, "", f"Gatekeeper endpoint unavailable: {exc}"),
                 message,
             )
+
+    # -- Negotiator (multi-turn) ------------------------------------------- #
+
+    def _roll_day(self) -> None:
+        today = time.strftime("%Y-%m-%d")
+        if self._neg_day != today:
+            self._neg_day, self._neg_attempts, self._neg_denials = today, {}, 0
+
+    def begin(self, app: str) -> None:
+        """A blocked launch starts a fresh conversation for that app."""
+        self._roll_day()
+        self._neg_state.pop(app, None)
+        self._neg_attempts[app] = self._neg_attempts.get(app, 0) + 1
+
+    def _negotiate(self, payload: dict) -> dict:
+        """One Negotiator step, over HTTP or in this process. May raise."""
+        if self.negotiator_url:
+            import json as _json
+            import urllib.request
+
+            req = urllib.request.Request(
+                self.negotiator_url, data=_json.dumps(payload).encode("utf-8"),
+                method="POST", headers={"content-type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return _json.loads(resp.read().decode("utf-8", "replace"))
+        import sys
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv(os.path.join(root, ".env"))
+        except ImportError:
+            pass
+        import negotiator
+
+        reply = negotiator.negotiate(payload["app"], payload["message"],
+                                     payload.get("state"), payload.get("context"))
+        if reply["decision"] == "APPROVE":
+            ok, why = negotiator.verify_trigger(reply["trigger"])
+            if not ok:
+                raise ValueError(f"unlock trigger rejected ({why})")
+        return reply
+
+    def _ask_negotiator(self, app: str, reason: str) -> GateResult:
+        """Send one user message to the Negotiator. Anything unexpected is a denial."""
+        self._roll_day()
+        payload = {
+            "app": app,
+            "message": reason,
+            "state": self._neg_state.get(app),
+            "context": {
+                "local_time": time.strftime("%H:%M"),
+                "attempts_today": self._neg_attempts.get(app, 1),
+                "denials_today": self._neg_denials,
+            },
+        }
+        try:
+            reply = self._negotiate(payload)
+            decision = str(reply.get("decision", "")).upper()
+            said = str(reply.get("message") or "").strip()
+            if decision == "CLARIFY":
+                self._neg_state[app] = reply.get("state")
+                return GateResult(Verdict(False, 0, said, said), reason, kind="clarify")
+            self._neg_state.pop(app, None)
+            trigger = reply.get("trigger") or {}
+            if (decision == "APPROVE" and trigger.get("trigger") == "UNLOCK_APP"
+                    and str(trigger.get("app", "")).lower() == app.lower()):
+                minutes = int(trigger.get("minutes") or 0)
+                if minutes >= 1:
+                    return GateResult(
+                        Verdict(True, min(minutes, CONFIG["max_unlock_minutes"]), said, said), reason)
+            self._neg_denials += 1
+            return GateResult(Verdict(False, 0, said, said or "Denied."), reason)
+        except Exception as exc:  # network, bad JSON, bad trigger...
+            return GateResult(
+                Verdict(False, 0, "", f"Negotiator unavailable: {exc}"), reason)
 
     def _ask_openai(self, message: str) -> GateResult:
         """Call OpenAI directly from this device."""
@@ -636,6 +733,8 @@ class InterceptorApp(ctk.CTk):
     # -- event handlers ---------------------------------------------------- #
 
     def _on_blocked_event(self, event: BlockedEvent) -> None:
+        if self.gatekeeper.mode == "negotiator" and event.name != self._pending_app:
+            self.gatekeeper.begin(event.name)
         self._pending_app = event.name
         self.status.configure(text=f"Blocked: {event.name}")
         self.detail.configure(
@@ -662,6 +761,18 @@ class InterceptorApp(ctk.CTk):
         self.submit_btn.configure(state="normal", text="Ask the gatekeeper")
         verdict: Verdict = result.verdict
         app = self._pending_app or "unknown"
+
+        if result.kind == "clarify":
+            # The Negotiator wants one more detail: show its question, keep the lock.
+            self.status.configure(text="One question.")
+            self.detail.configure(text="Answer it specifically: what exactly, and for how long.")
+            self.verdict.configure(text=verdict.reason, text_color=CONFIG["accent"])
+            self.entry.delete(0, "end")
+            self.entry.focus_set()
+            return
+
+        if self.gatekeeper.mode == "negotiator":
+            self.entry.delete(0, "end")
 
         if not verdict.approved:
             self.status.configure(text="Denied.")
@@ -803,6 +914,7 @@ def main() -> None:
         model=CONFIG["model"],
         timeout=CONFIG["api_timeout"],
         mode=CONFIG["gatekeeper_mode"],
+        negotiator_url=CONFIG["negotiator_url"],
         endpoint=CONFIG["gatekeeper_url"],
         token=CONFIG["gatekeeper_token"] or os.environ.get("GATEKEEPER_TOKEN", ""),
     )

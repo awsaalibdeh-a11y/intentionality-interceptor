@@ -20,6 +20,7 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request
 
+import negotiator
 from judge import CLAUDE_JUDGE_PROMPT, build_judge_message, decide, parse_judgment, verdict_text
 from prompts import (
     CLAUDE_CHECKIN_PROMPT,
@@ -410,6 +411,54 @@ def approve():
         return _plain("DENY: The gatekeeper couldn't be reached, so the lock stays on.")
     _, minutes, message = decide(judgment, usage, trust, _int(data.get("daily_limit"), 0, 1440, 0), bool(data.get("focus")), _block(data))
     return _plain(verdict_text(minutes, message))
+
+
+# ---- the Negotiator --------------------------------------------------------
+
+
+@app.get("/negotiator")
+def negotiator_page():
+    return render_template("negotiator.html", ai=bool(_key()), v=_negotiator_version(),
+                           model=negotiator.model_name(), prompt=negotiator.NEGOTIATOR_SYSTEM_PROMPT,
+                           limits={"clarify": negotiator.MAX_CLARIFY, "minutes": negotiator.MAX_MINUTES})
+
+
+def _negotiator_version():
+    import hashlib
+    h = hashlib.sha1()
+    for name in ("negotiator.js", "negotiator.css"):
+        with open(os.path.join(app.static_folder, name), "rb") as f:
+            h.update(f.read())
+    return h.hexdigest()[:10]
+
+
+@app.post("/api/negotiate")
+def negotiate_api():
+    """One step of the Negotiator conversation.
+
+    Body: {"app", "message" ("" opens a session), "state" (token from the last reply),
+           "context": {"local_time": "HH:MM", "attempts_today": n, "denials_today": n}}
+    """
+    data = request.get_json(silent=True) or {}
+    message = str(data.get("message") or "")
+    # Only real model calls count against the AI budget; the opening question is local.
+    if message.strip() and _key() and not _allowed(_client_ip()):
+        return jsonify(error="Too many requests for now. Take that as a sign and try again later."), 429
+    try:
+        reply = negotiator.negotiate(data.get("app"), message, data.get("state"), data.get("context"))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if reply["source"] == "rules" and _key():
+        app.logger.warning("negotiator fell back to local rules: %s", reply["path"])
+    return jsonify(reply)
+
+
+@app.post("/api/negotiate/verify")
+def negotiate_verify():
+    """Check an unlock trigger's signature and expiry (the desktop app calls this before unlocking)."""
+    data = request.get_json(silent=True) or {}
+    ok, why = negotiator.verify_trigger(data.get("trigger"))
+    return jsonify(valid=ok, detail=why)
 
 
 if __name__ == "__main__":

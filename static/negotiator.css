@@ -223,3 +223,25 @@ dialog pre { white-space: pre-wrap; padding: 18px; }
   .app-x { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---------- honesty: debrief and trust ---------- */
+.stamp.DEBRIEF { color: var(--ask); border-color: #54441f; background: var(--ask-bg); }
+.composer.debrief .starters { display: none; }
+.msg.sys.good .bubble { color: var(--ok); }
+.msg.sys.bad .bubble { color: var(--no); }
+.trust { margin-top: 14px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.trust-head { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; color: var(--muted); }
+.tier { font: 700 10px var(--mono); letter-spacing: .1em; padding: 3px 7px; border-radius: 6px; border: 1px solid var(--line-2); color: var(--muted); }
+.tier.HIGH { color: var(--ok); border-color: #2c4a3a; background: var(--ok-bg); }
+.tier.LOW { color: var(--no); border-color: #55302a; background: var(--no-bg); }
+.trust-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.trust-row b { font: 700 24px var(--mono); font-variant-numeric: tabular-nums; min-width: 44px; }
+.trust-bar { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--raised); }
+.trust-bar i { display: block; height: 100%; width: 50%; border-radius: 3px; background: var(--ask); transition: width .6s ease, background .3s; }
+.trust-bar.HIGH i { background: var(--ok); } .trust-bar.LOW i { background: var(--no); }
+.trust-bar u { position: absolute; left: 35%; top: -3px; width: 1px; height: 12px; background: var(--line-2); }
+.trust-counts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 10px; font-size: 11.5px; color: var(--faint); }
+.trust-counts b { font: 700 12px var(--mono); color: var(--text); }
+.trust-note { margin: 9px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--faint); }
+.trust-note.owed { color: var(--ask); }
+.log .tag.DEBRIEF { color: var(--ask); background: var(--ask-bg); }

@@ -135,6 +135,17 @@
           <div class="rate-bar"><i id="rateFill"></i></div>
         </div>
 
+        <div class="trust" id="trustCard">
+          <div class="trust-head"><span>Trust</span><span class="tier" id="trustTier">UNPROVEN</span></div>
+          <div class="trust-row"><b id="trustNum">50</b><div class="trust-bar"><i id="trustFill"></i><u></u></div></div>
+          <div class="trust-counts">
+            <span><b id="trKept">0</b> kept</span>
+            <span><b id="trMissed">0</b> honest miss</span>
+            <span><b id="trBroken">0</b> unaccounted</span>
+          </div>
+          <p class="trust-note" id="trustNote">Every unlock is debriefed before the next one. A straight answer is always the cheap one.</p>
+        </div>
+
         <div class="col-head sub"><h2>Decision path</h2><span class="count" id="pathMeta"></span></div>
         <ol class="path" id="path"><li class="empty">The steps behind the last call show up here.</li></ol>
 
@@ -151,7 +162,13 @@
       <div><h2>Negotiator system prompt</h2><p>The model reads the conversation with this. Code then applies the limits.</p></div>
       <button class="icon-btn" id="promptClose" type="button" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
-    <pre id="promptText">{{ prompt }}</pre>
+    <pre id="promptText">{{ prompt }}
+
+======================================================================
+DEBRIEF PROMPT (used after an unlock ends, before the next one opens)
+======================================================================
+
+{{ debrief_prompt }}</pre>
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>

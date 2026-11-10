@@ -34,6 +34,18 @@
     "rule:night_cap": "Late-night cap applied",
     "rule:heavy_use_cap": "Heavy-use cap applied",
     "rule:voice_lint": "Message rewritten to keep the coach voice",
+    "record:new": "No honesty record yet, starting unproven",
+    "guard:debrief_due": "An earlier unlock has to be accounted for first",
+    "debrief:KEPT": "Account matched the plan, with a real detail",
+    "debrief:MISSED": "Honest miss: costs almost nothing",
+    "debrief:THIN": "Too generic, one detail requested",
+    "debrief:UNPROVEN": "No concrete detail, not counted",
+    "debrief:DODGE": "Did not account for the session",
+    "rule:reason_reuse": "Same reason used again today: needs something new",
+    "rule:low_trust_probe": "Low trust: one extra question before approval",
+    "rule:low_trust_cap": "Low trust: shorter unlock",
+    "rule:emergency_repeat": "Repeat emergency today: short unlock",
+    "honesty:debrief_owed": "Promise recorded, debrief owed afterwards",
   };
 
   /* ---------- storage ---------- */
@@ -47,10 +59,11 @@
   function load() {
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(STORE_KEY)); } catch { /* storage blocked or empty */ }
-    const base = { day: dayKey(), apps: DEFAULT_APPS.slice(), unlocks: {}, cooldowns: {}, ...freshDay() };
+    const base = { day: dayKey(), apps: DEFAULT_APPS.slice(), unlocks: {}, cooldowns: {}, record: null, trust: null, ended: [], ...freshDay() };
     if (!saved || typeof saved !== "object") return base;
     const merged = { ...base, ...saved };
     if (!Array.isArray(merged.apps) || !merged.apps.length) merged.apps = DEFAULT_APPS.slice();
+    if (!Array.isArray(merged.ended)) merged.ended = [];
     if (merged.day !== dayKey()) Object.assign(merged, freshDay(), { day: dayKey() });
     return merged;
   }
@@ -229,7 +242,37 @@
     renderApps();
   }
 
-  const context = (app) => ({ local_time: hhmm(), attempts_today: store.tries[app] || 0, denials_today: store.denials });
+  const context = (app) => ({ local_time: hhmm(), attempts_today: store.tries[app] || 0, denials_today: store.denials, ended: store.ended });
+
+  /* The honesty record is opaque and signed; the page only carries it back and shows the public part. */
+  function absorb(reply) {
+    if (reply.record) store.record = reply.record;
+    if (reply.trust) store.trust = reply.trust;
+    if (reply.debrief) {
+      const { verdict, delta, app } = reply.debrief;
+      const label = { KEPT: "plan kept", MISSED: "honest miss", UNPROVEN: "no detail given", DODGE: "not accounted for" }[verdict] || verdict;
+      const line = addMessage("sys", `Debrief for ${app}: ${label} · trust ${delta > 0 ? "+" : ""}${delta}`);
+      line.classList.add(delta > 0 ? "good" : delta < -2 ? "bad" : "flat");
+      logEvent("DEBRIEF", app, `${label} (${delta > 0 ? "+" : ""}${delta})`);
+    }
+    save();
+    renderTrust();
+    renderLedger();
+  }
+  function setPhase(reply) {
+    const debrief = reply.phase === "debrief";
+    $("composer").classList.toggle("debrief", debrief);
+    $("meter").classList.toggle("hidden", debrief);
+    $("input").placeholder = debrief ? "What did you actually do?" : "Why are you opening it right now?";
+    if (debrief) {
+      $("sessEyebrow").textContent = "Debrief first";
+      setStamp("DEBRIEF", "DEBRIEF");
+    } else if (reply.phase === "debriefed") {
+      $("sessEyebrow").textContent = "Launch intercepted";
+      setStamp("", "PENDING");
+    }
+    return debrief;
+  }
 
   async function openApp(app) {
     if (session && session.busy) return;
@@ -265,14 +308,15 @@
     setComposer(false, "Opening the checkpoint…");
     showTyping();
     try {
-      const reply = await post("/api/negotiate", { app, message: "", context: context(app) });
+      const reply = await post("/api/negotiate", { app, message: "", context: context(app), record: store.record });
       if (!session || session.app !== app) return;
       hideTyping();
       session.state = reply.state;
+      absorb(reply);
       addMessage("neg", reply.message);
       renderPath(reply);
       session.busy = false;
-      setComposer(true);
+      setComposer(true, setPhase(reply) ? "Answer straight. Admitting a miss costs almost nothing." : "");
     } catch (error) {
       hideTyping();
       if (session) session.busy = false;
@@ -292,7 +336,7 @@
     showTyping();
     let reply;
     try {
-      reply = await post("/api/negotiate", { app, message: text, state: session.state, context: context(app) });
+      reply = await post("/api/negotiate", { app, message: text, state: session.state, context: context(app), record: store.record });
     } catch (error) {
       hideTyping();
       session.busy = false;
@@ -305,13 +349,14 @@
     hideTyping();
     session.busy = false;
     session.state = reply.state;
+    absorb(reply);
     addMessage("neg", reply.message, reply.decision);
     setDots(reply.clarify_used);
     renderPath(reply);
 
     if (reply.decision === "CLARIFY") {
-      setStamp("CLARIFY", "CLARIFY");
-      setComposer(true);
+      if (reply.phase === "reason") setStamp("CLARIFY", "CLARIFY");
+      setComposer(true, setPhase(reply) ? "Answer straight. Admitting a miss costs almost nothing." : "");
       return;
     }
     session.decision = reply.decision;
@@ -362,6 +407,8 @@
 
   function relock(app, how) {
     if (!store.unlocks[app]) return;
+    const sid = store.unlocks[app].trigger && store.unlocks[app].trigger.session;
+    if (sid) store.ended = [...store.ended.filter((s) => s !== sid), sid].slice(-12);   // its debrief is due now
     delete store.unlocks[app];
     logEvent("RELOCK", app, how);
     save();
@@ -370,7 +417,7 @@
       $("sessEyebrow").textContent = "Locked again";
       setStamp("", "LOCKED");
       addMessage("sys", how === "time ran out" ? `Time's up. ${app} is locked again.` : `${app} re-locked early. Good call.`);
-      setComposer(false, "Pick the app again to open a new checkpoint.");
+      setComposer(false, "Next time you open anything, the debrief comes first.");
       session = null;
     }
     renderApps();
@@ -455,12 +502,32 @@
       if (!note && kind === "read") note = "The model's reading: category / proposed call";
       if (!note && kind === "final") note = detail === "APPROVE" ? "Signed unlock trigger issued" : detail === "DENY" ? "Stays locked, cooldown started" : "One more question";
       if (!note && step.startsWith("model:unavailable")) note = "Model call failed, falling back";
+      if (!note && kind === "trust") note = "Trust score moved";
       if (!note && step.startsWith("rule:category_mismatch")) note = "Category and call disagreed; stricter side won";
       if (note) li.append(el("small", "", note));
       list.append(li);
     }
     const who = reply.source === "model" ? reply.model : reply.source === "rules" ? "local rules" : "guard";
     $("pathMeta").textContent = `${who} · ${reply.latency_ms} ms`;
+  }
+
+  function renderTrust() {
+    const t = store.trust || { score: 50, tier: "NORMAL", kept: 0, missed: 0, broken: 0, owed: 0 };
+    const settled = t.kept + t.missed + t.broken;
+    $("trustNum").textContent = String(t.score);
+    $("trustFill").style.width = `${t.score}%`;
+    $("trustFill").parentElement.className = `trust-bar ${t.tier}`;
+    $("trustTier").textContent = !settled && t.tier === "NORMAL" ? "UNPROVEN" : t.tier === "NORMAL" ? "STEADY" : t.tier;
+    $("trustTier").className = `tier ${t.tier}`;
+    $("trKept").textContent = String(t.kept);
+    $("trMissed").textContent = String(t.missed);
+    $("trBroken").textContent = String(t.broken);
+    const note = $("trustNote");
+    note.classList.toggle("owed", t.owed > 0);
+    note.textContent = t.owed
+      ? `${t.owed} debrief${t.owed === 1 ? "" : "s"} owed. It comes before the next unlock.`
+      : t.tier === "LOW" ? "Low trust: unlocks are capped at 10 minutes and need one extra detail. Kept plans raise it."
+      : "Every unlock is debriefed before the next one. A straight answer is always the cheap one.";
   }
 
   function renderLedger() {
@@ -476,7 +543,7 @@
     if (!store.log.length) { log.append(el("li", "empty", "No decisions yet today.")); return; }
     for (const entry of store.log) {
       const li = el("li");
-      li.append(el("span", `tag ${entry.kind}`, entry.kind === "RELOCK" ? "LOCK" : entry.kind));
+      li.append(el("span", `tag ${entry.kind}`, entry.kind === "RELOCK" ? "LOCK" : entry.kind === "DEBRIEF" ? "TRUTH" : entry.kind));
       li.append(el("span", "what", `${entry.app}: ${entry.text}`));
       li.append(el("span", "when", hhmm(entry.t)));
       log.append(li);
@@ -552,5 +619,6 @@
   $("modePill").classList.toggle("demo", !boot.ai);
   renderApps();
   renderLedger();
+  renderTrust();
   setInterval(tick, 1000);
 })();

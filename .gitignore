@@ -10,3 +10,4 @@ windows/nuget/
 
 # desktop app local state
 usage_log.json
+negotiator_record.json
